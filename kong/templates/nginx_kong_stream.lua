@@ -33,6 +33,12 @@ ssl_ciphers ${{SSL_CIPHERS}};
 $(el.name) $(el.value);
 > end
 
+> if ssl_cipher_suite == 'old' then
+lua_ssl_conf_command CipherString DEFAULT:@SECLEVEL=0;
+proxy_ssl_conf_command CipherString DEFAULT:@SECLEVEL=0;
+ssl_conf_command CipherString DEFAULT:@SECLEVEL=0;
+> end
+
 init_by_lua_block {
 > if test and coverage then
     require 'luacov'
@@ -88,7 +94,7 @@ server {
 > end
 
 > if stream_proxy_ssl_enabled then
-    listen unix:${{PREFIX}}/stream_tls_terminate.sock ssl proxy_protocol;
+    listen unix:${{SOCKET_PATH}}/${{STREAM_TLS_TERMINATE_SOCK}} ssl proxy_protocol;
 > end
 
     access_log ${{PROXY_STREAM_ACCESS_LOG}};
@@ -112,6 +118,9 @@ server {
     ssl_session_cache   shared:StreamSSL:${{SSL_SESSION_CACHE_SIZE}};
     ssl_certificate_by_lua_block {
         Kong.ssl_certificate()
+    }
+    ssl_client_hello_by_lua_block {
+        Kong.ssl_client_hello()
     }
 > end
 
@@ -169,7 +178,7 @@ server {
 }
 
 server {
-    listen unix:${{PREFIX}}/stream_tls_passthrough.sock proxy_protocol;
+    listen unix:${{SOCKET_PATH}}/${{STREAM_TLS_PASSTHROUGH_SOCK}} proxy_protocol;
 
     access_log ${{PROXY_STREAM_ACCESS_LOG}};
     error_log ${{PROXY_STREAM_ERROR_LOG}} ${{LOG_LEVEL}};
@@ -199,7 +208,7 @@ server {
 
 > if database == "off" then
 server {
-    listen unix:${{PREFIX}}/stream_config.sock;
+    listen unix:${{SOCKET_PATH}}/${{STREAM_CONFIG_SOCK}};
 
     error_log  ${{ADMIN_ERROR_LOG}} ${{LOG_LEVEL}};
 
@@ -210,7 +219,7 @@ server {
 > end -- database == "off"
 
 server {        # ignore (and close }, to ignore content)
-    listen unix:${{PREFIX}}/stream_rpc.sock;
+    listen unix:${{SOCKET_PATH}}/${{STREAM_RPC_SOCK}};
     error_log  ${{ADMIN_ERROR_LOG}} ${{LOG_LEVEL}};
     content_by_lua_block {
         Kong.stream_api()
@@ -219,7 +228,7 @@ server {        # ignore (and close }, to ignore content)
 > end -- #stream_listeners > 0
 
 server {
-    listen unix:${{PREFIX}}/stream_worker_events.sock;
+    listen unix:${{SOCKET_PATH}}/${{STREAM_WORKER_EVENTS_SOCK}};
     error_log  ${{ADMIN_ERROR_LOG}} ${{LOG_LEVEL}};
     access_log off;
     content_by_lua_block {

@@ -12,30 +12,35 @@ build-packages:
   package: deb
   check-manifest-suite: ubuntu-20.04-amd64
 - label: ubuntu-22.04
+  image: ubuntu:22.04
   package: deb
   check-manifest-suite: ubuntu-22.04-amd64
 - label: ubuntu-22.04-arm64
+  image: ubuntu:22.04
   package: deb
   bazel-args: --platforms=//:generic-crossbuild-aarch64
   check-manifest-suite: ubuntu-22.04-arm64
+- label: ubuntu-24.04
+  image: ubuntu:24.04
+  package: deb
+  check-manifest-suite: ubuntu-24.04-amd64
+- label: ubuntu-24.04-arm64
+  image: ubuntu:24.04
+  package: deb
+  bazel-args: --platforms=//:generic-crossbuild-aarch64
+  check-manifest-suite: ubuntu-24.04-arm64
 
 # Debian
-- label: debian-10
-  image: debian:10
-  package: deb
-  check-manifest-suite: debian-10-amd64
 - label: debian-11
   image: debian:11
   package: deb
   check-manifest-suite: debian-11-amd64
+- label: debian-12
+  image: debian:12
+  package: deb
+  check-manifest-suite: debian-12-amd64
 
 # RHEL
-- label: rhel-7
-  image: centos:7
-  package: rpm
-  package-type: el7
-  bazel-args: --//:wasmx_el7_workaround=true
-  check-manifest-suite: el7-amd64
 - label: rhel-8
   image: rockylinux:8
   package: rpm
@@ -49,15 +54,16 @@ build-packages:
 - label: rhel-9-arm64
   package: rpm
   package-type: el9
-  bazel-args: --platforms=//:rhel9-crossbuild-aarch64
+  bazel-args: --platforms=//:rhel9-crossbuild-aarch64 --//:brotli=False
   check-manifest-suite: el9-arm64
 
   # Amazon Linux
 - label: amazonlinux-2
-  image: amazonlinux:2
   package: rpm
   package-type: aws2
   check-manifest-suite: amazonlinux-2-amd64
+  # simdjson doesn't compile on gcc7.3.1 (needs 7.4)
+  bazel-args: --platforms=//:aws2-crossbuild-x86_64 --//:simdjson=False
 - label: amazonlinux-2023
   image: amazonlinux:2023
   package: rpm
@@ -66,7 +72,7 @@ build-packages:
 - label: amazonlinux-2023-arm64
   package: rpm
   package-type: aws2023
-  bazel-args: --platforms=//:aws2023-crossbuild-aarch64
+  bazel-args: --platforms=//:aws2023-crossbuild-aarch64 --//:brotli=False
   check-manifest-suite: amazonlinux-2023-arm64
 
 build-images:
@@ -81,17 +87,17 @@ build-images:
 
 # Ubuntu
 - label: ubuntu
-  base-image: ubuntu:22.04
+  base-image: ubuntu:24.04
   package: deb
-  artifact-from: ubuntu-22.04
-  artifact-from-alt: ubuntu-22.04-arm64
+  artifact-from: ubuntu-24.04
+  artifact-from-alt: ubuntu-24.04-arm64
   docker-platforms: linux/amd64, linux/arm64
 
 # Debian
 - label: debian
-  base-image: debian:11-slim
+  base-image: debian:12-slim
   package: deb
-  artifact-from: debian-11
+  artifact-from: debian-12
 
 # RHEL
 - label: rhel
@@ -132,28 +138,34 @@ release-packages:
   artifact-version: 22.04
   artifact-type: ubuntu
   artifact: kong.arm64.deb
+- label: ubuntu-24.04
+  package: deb
+  artifact-from: ubuntu-24.04
+  artifact-version: 24.04
+  artifact-type: ubuntu
+  artifact: kong.amd64.deb
+- label: ubuntu-24.04-arm64
+  package: deb
+  artifact-from: ubuntu-24.04-arm64
+  artifact-version: 24.04
+  artifact-type: ubuntu
+  artifact: kong.arm64.deb
 
 # Debian
-- label: debian-10
-  package: deb
-  artifact-from: debian-10
-  artifact-version: 10
-  artifact-type: debian
-  artifact: kong.amd64.deb
 - label: debian-11
   package: deb
   artifact-from: debian-11
   artifact-version: 11
   artifact-type: debian
   artifact: kong.amd64.deb
+- label: debian-12
+  package: deb
+  artifact-from: debian-12
+  artifact-version: 12
+  artifact-type: debian
+  artifact: kong.amd64.deb
 
 # RHEL
-- label: rhel-7
-  package: rpm
-  artifact-from: rhel-7
-  artifact-version: 7
-  artifact-type: rhel
-  artifact: kong.el7.amd64.rpm
 - label: rhel-8
   package: rpm
   artifact-from: rhel-8

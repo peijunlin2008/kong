@@ -7,7 +7,7 @@ the community (with various technical backgrounds), and a guide/reference for
 contributors and maintainers.
 
 Please have a look at our [Community Pledge](./COMMUNITY_PLEDGE.md) to
-understand how we work with our open source contributors!
+understand how we work with our open-source contributors!
 
 Consult the Table of Contents below, and jump to the desired section.
 
@@ -36,7 +36,8 @@ Consult the Table of Contents below, and jump to the desired section.
             * [Writing tests](#writing-tests)
             * [Writing changelog](#writing-changelog)
             * [Writing performant code](#writing-performant-code)
-        * [Contributor T-shirt](#contributor-t-shirt)
+            * [Adding Changelog](#adding-changelog)
+        * [Contributor Badge](#contributor-badge)
     * [Code style](#code-style)
         * [Table of Contents - Code style](#table-of-contents---code-style)
         * [Modules](#modules)
@@ -54,11 +55,11 @@ If you are a Kong Enterprise customer, you may contact the Enterprise Support ch
 by opening an Enterprise support ticket on
 [https://support.konghq.com](https://support.konghq.com/).
 
-If you are experiencing a P1 issue, please call at the [24/7 Enterprise Support
+If you are experiencing a P1 issue, please call the [24/7 Enterprise Support
 phone line](https://support.konghq.com/hc/en-us/articles/115004921808-Telephone-Support)
 for immediate assistance, as published in the Customer Success Reference Guide.
 
-If you are interested in becoming a Kong Enterprise customer, please to visit
+If you are interested in becoming a Kong Enterprise customer, please visit
 https://konghq.com/kong-enterprise-edition/ or contact us at
 [sales@konghq.com](mailto:sales@konghq.com).
 
@@ -66,7 +67,7 @@ https://konghq.com/kong-enterprise-edition/ or contact us at
 
 ### Community Edition
 
-For questions around the use of the Community Edition, please use
+For questions about the use of the Community Edition, please use
 [GitHub Discussions](https://github.com/Kong/kong/discussions).  You
 can also join our [Community Slack](http://kongcommunity.slack.com/)
 for real-time conversations around Kong Gateway.
@@ -151,7 +152,7 @@ should begin by reading the
 
 If you already wrote a plugin, and are thinking about making it available to
 the community, we strongly encourage you to host it on a publicly available
-repository (like GitHub), and to distribute it via
+repository (like GitHub), and distribute it via
 [LuaRocks](https://luarocks.org/search?q=kong). A good resource on how to do
 so is the [Distribution
 Section](https://docs.konghq.com/latest/plugin-development/distribution/#distributing-your-plugin)
@@ -190,21 +191,23 @@ to verify a few things:
   development documentation for additional details)
 - The tests are passing: run `make test`, `make test-all`, or whichever is
   appropriate for your change
+- Do not update `CHANGELOG.md` inside your Pull Request. This file is automatically regenerated
+  and maintained during the release process.
 
 If the above guidelines are respected, your Pull Request has all its chances
 to be considered and will be reviewed by a maintainer.
 
 If you are asked to update your patch by a reviewer, please do so! Remember:
-**you are responsible for pushing your patch forward**. If you contributed it,
+**You are responsible for pushing your patch forward**. If you contributed it,
 you are probably the one in need of it. You must be ready to apply changes
 to it if necessary.
 
 If your Pull Request was accepted and fixes a bug, adds functionality, or
 makes it significantly easier to use or understand Kong, congratulations!
 You are now an official contributor to Kong. Get in touch with us to receive
-your very own [Contributor T-shirt](#contributor-t-shirt)!
+your very own [Contributor Badge](#contributor-badge)!
 
-Your change will be included in the subsequent release Changelog, and we will
+Your change will be included in the subsequent release and its changelog, and we will
 not forget to include your name if you are an external contributor. :wink:
 
 [Back to TOC](#table-of-contents)
@@ -292,7 +295,7 @@ accepted types are:
   is too big to be considered just `perf`
 - **chore**: Maintenance changes related to code cleaning that isn't
   considered part of a refactor, build process updates, dependency bumps, or
-  auxiliary tools and libraries updates (LuaRocks, Travis-ci, etc...).
+  auxiliary tools and libraries updates (LuaRocks, GitHub Actions, etc...).
 
 [Back to TOC](#table-of-contents)
 
@@ -335,7 +338,7 @@ written so that:
 
 The body of your commit message should contain a detailed description of your
 changes. Ideally, if the change is significant, you should explain its
-motivation, the chosen implementation, and justify it.
+motivation and the chosen implementation, and justify it.
 
 As previously mentioned, lines in the commit messages should not exceed 72
 characters.
@@ -357,7 +360,7 @@ Here are a few examples of good commit messages to take inspiration from:
 fix(admin): send HTTP 405 on unsupported method
 
 The appropriate status code when the request method is not supported
-on an endpoint it 405. We previously used to send HTTP 404, which
+on an endpoint is 405. We previously used to send HTTP 404, which
 is not appropriate. This updates the Admin API helpers to properly
 return 405 on such user errors.
 
@@ -412,11 +415,11 @@ suite.
   output
 - `spec/03-plugins` contains tests (both unit and integration) for the bundled
   plugins (those plugins still live in the core repository as of now, but will
-  eventually be externalized)
+  eventually be externalized.)
 
 A few guidelines when writing tests:
 
-- Make sure to use appropriate `describe` and `it` blocks, so it's obvious to what is being
+- Make sure to use appropriate `describe` and `it` blocks, so it's obvious what is being
   tested exactly
 - Ensure the atomicity of your tests: no test should be asserting two
   unrelated behaviors at the same time
@@ -448,8 +451,8 @@ assert.same(t1, t2)
 
 #### Writing changelog
 
-Please follow the guidelines in [Changelog Readme](https://github.com/Kong/kong/blob/master/CHANGELOG/README.md)
-on how to write changelog for your change.
+Please follow the guidelines in [Changelog Readme](https://github.com/Kong/kong/blob/master/changelog/README.md)
+on how to write a changelog for your change.
 
 [Back to TOC](#table-of-contents)
 
@@ -499,17 +502,17 @@ practices:
   end
   ```
 
-  For OpenResty built-in APIs we may drop `ngx.` in the localized version
+  For OpenResty built-in APIs, we may drop `ngx.` in the localized version
 
   ```lua
   local req_get_post_args = ngx.req.get_post_args
   ```
 
-  Non-hot paths are localization optional
+  Non-hot paths are localization-optional
 
   ```lua
   if err then
-    ngx.log(ngx.ERR, ...) -- this is fine as error condition is not on the hot path
+    ngx.log(ngx.ERR, ...) -- this is fine as the error condition is not on the hot path
   end
   ```
 
@@ -532,23 +535,31 @@ practices:
 
 And finally, most importantly: use your best judgment to design an
 efficient algorithm. Doing so will always be more performant than a
-poorly-designed algorithm, even following all the performance tricks of the
+poorly designed algorithm, even following all the performance tricks of the
 language you are using. :smile:
 
 [Back to TOC](#table-of-contents)
 
-### Contributor T-shirt
+#### Adding Changelog
+
+Please follow [the changelog instructions](https://github.com/Kong/gateway-changelog)
+to create the appropriate changelog file for your Pull Request.
+
+[Back to TOC](#table-of-contents)
+
+### Contributor Badge
 
 If your Pull Request to [Kong/kong](https://github.com/Kong/kong) was
 accepted, and it fixes a bug, adds functionality, or makes it significantly
 easier to use or understand Kong, congratulations! You are eligible to
-receive the very special Contributor T-shirt! Go ahead and fill out the
+receive the very special digital Contributor Badge! Go ahead and fill out the
 [Contributors Submissions form](https://goo.gl/forms/5w6mxLaE4tz2YM0L2).
 
-Proudly wear your T-shirt and show it to us by tagging
+Proudly display your Badge and show it to us by tagging
 [@thekonginc](https://twitter.com/thekonginc) on Twitter!
 
-![Kong Contributor T-shirt](https://konghq.com/wp-content/uploads/2018/04/100-contributor-t-shirt-1024x768.jpg)
+*Badges expire after 1 year, at which point you may submit a new contribution
+to renew the badge.*
 
 [Back to TOC](#table-of-contents)
 
@@ -666,7 +677,7 @@ local t = {foo="hello",bar="world"}
 local t = { foo = "hello", bar = "world" }
 ```
 
-Perfer `ipairs()` to `for` loop when iterating an array,
+Prefer `ipairs()` to `for` loop when iterating an array,
 which gives us more readability:
 
 ```lua
@@ -943,7 +954,17 @@ then
 end
 ```
 
+When invoking `ngx.log()` with some variable as input, prefer vararg-style
+calls rather than using the string concatenation operator (`..`):
+
+```lua
+-- bad
+ngx.log(ngx.DEBUG, "if `my_var` is nil, this code throws an exception: " .. my_var)
+
+-- good
+ngx.log(ngx.DEBUG, "if `my_var` is nil, this code is fine: ", my_var)
+```
+
 [Back to code style TOC](#table-of-contents---code-style)
 
 [Back to TOC](#table-of-contents)
-

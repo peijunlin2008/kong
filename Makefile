@@ -1,7 +1,7 @@
 OS := $(shell uname | awk '{print tolower($$0)}')
 MACHINE := $(shell uname -m)
 
-DEV_ROCKS = "busted 2.1.2" "busted-htest 1.0.0" "luacheck 1.1.1" "lua-llthreads2 0.1.6" "ldoc 1.5.0" "luacov 0.15.0"
+DEV_ROCKS = "busted 2.2.0" "busted-hjtest 0.0.5" "luacheck 1.2.0" "lua-llthreads2 0.1.6" "ldoc 1.5.0" "luacov 0.15.0" "lua-reqwest 0.1.1"
 WIN_SCRIPTS = "bin/busted" "bin/kong" "bin/kong-health"
 BUSTED_ARGS ?= -v
 TEST_CMD ?= bin/busted $(BUSTED_ARGS)
@@ -39,13 +39,13 @@ endif
 .PHONY: install dev \
 	lint test test-integration test-plugins test-all \
 	pdk-phase-check functional-tests \
-	fix-windows release wasm-test-filters
+	fix-windows release wasm-test-filters test-logs
 
 ROOT_DIR:=$(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 KONG_SOURCE_LOCATION ?= $(ROOT_DIR)
 GRPCURL_VERSION ?= 1.8.5
-BAZLISK_VERSION ?= 1.18.0
-H2CLIENT_VERSION ?= 0.4.0
+BAZLISK_VERSION ?= 1.20.0
+H2CLIENT_VERSION ?= 0.4.4
 BAZEL := $(shell command -v bazel 2> /dev/null)
 VENV = /dev/null # backward compatibility when no venv is built
 
@@ -71,6 +71,17 @@ bin/h2client:
 		https://github.com/Kong/h2client/releases/download/v$(H2CLIENT_VERSION)/h2client_$(H2CLIENT_VERSION)_$(OS)_$(H2CLIENT_MACHINE).tar.gz | tar xz -C bin;
 	@$(RM) bin/README.md
 
+install-rust-toolchain:
+	@if command -v cargo; then \
+		echo "Rust is already installed in the local directory, skipping"; \
+	else \
+		echo "Installing Rust..."; \
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path; \
+		. $$HOME/.cargo/env; \
+		rustup toolchain install stable; \
+		rustup default stable; \
+	fi
+
 
 check-bazel: bin/bazel
 ifndef BAZEL
@@ -90,8 +101,17 @@ build-venv: check-bazel
 		$(BAZEL) build //build:venv --verbose_failures --action_env=BUILD_NAME=$(BUILD_NAME); \
 	fi
 
+build-openresty: check-bazel
+
+	@if [ ! -e bazel-bin/build/$(BUILD_NAME)/openresty ]; then \
+		$(BAZEL) build //build:install-openresty --verbose_failures --action_env=BUILD_NAME=$(BUILD_NAME); \
+	else \
+		$(BAZEL) build //build:dev-make-openresty --verbose_failures --action_env=BUILD_NAME=$(BUILD_NAME); \
+	fi
+
 install-dev-rocks: build-venv
 	@. $(VENV) ;\
+	export PATH=$$PATH:$$HOME/.cargo/bin; \
 	for rock in $(DEV_ROCKS) ; do \
 	  if luarocks list --porcelain $$rock | grep -q "installed" ; then \
 		echo $$rock already installed, skipping ; \
@@ -102,7 +122,7 @@ install-dev-rocks: build-venv
 	  fi \
 	done;
 
-dev: build-venv install-dev-rocks bin/grpcurl bin/h2client wasm-test-filters
+dev: install-rust-toolchain build-venv install-dev-rocks bin/grpcurl bin/h2client wasm-test-filters
 
 build-release: check-bazel
 	$(BAZEL) clean --expunge
@@ -111,12 +131,8 @@ build-release: check-bazel
 package/deb: check-bazel build-release
 	$(BAZEL) build --config release :kong_deb
 
-package/apk: check-bazel build-release
-	$(BAZEL) build --config release :kong_apk
-
 package/rpm: check-bazel build-release
 	$(BAZEL) build --config release :kong_el8 --action_env=RPM_SIGNING_KEY_FILE --action_env=NFPM_RPM_PASSPHRASE
-	$(BAZEL) build --config release :kong_el7 --action_env=RPM_SIGNING_KEY_FILE --action_env=NFPM_RPM_PASSPHRASE
 	$(BAZEL) build --config release :kong_aws2	--action_env=RPM_SIGNING_KEY_FILE --action_env=NFPM_RPM_PASSPHRASE
 	$(BAZEL) build --config release :kong_aws2022 --action_env=RPM_SIGNING_KEY_FILE --action_env=NFPM_RPM_PASSPHRASE
 
@@ -138,6 +154,9 @@ lint: dev
 	@!(grep -R -E -I -n -w '#only|#o' spec && echo "#only or #o tag detected") >&2
 	@!(grep -R -E -I -n -- '---\s+ONLY' t && echo "--- ONLY block detected") >&2
 
+update-copyright: build-venv
+	bash -c 'OPENSSL_DIR=$(OPENSSL_DIR) EXPAT_DIR=$(EXPAT_DIR) $(VENV) luajit $(KONG_SOURCE_LOCATION)/scripts/update-copyright'
+
 test: dev
 	@$(VENV) $(TEST_CMD) spec/01-unit
 
@@ -155,6 +174,9 @@ ifndef test_spec
 	$(error test_spec variable needs to be set, i.e. make test-custom test_spec=foo/bar/baz_spec.lua)
 endif
 	@$(VENV) $(TEST_CMD) $(test_spec)
+
+test-logs:
+	tail -F servroot/logs/error.log
 
 pdk-phase-checks: dev
 	rm -f t/phase_checks.stats
@@ -179,9 +201,10 @@ remove:
 	$(warning 'remove' target is deprecated, please use `make dev` instead)
 	-@luarocks remove kong
 
-dependencies: bin/grpcurl bin/h2client
+dependencies: install-rust-toolchain bin/grpcurl bin/h2client
 	$(warning 'dependencies' target is deprecated, this is now not needed when using `make dev`, but are kept for installation that are not built by Bazel)
 
+	export PATH=$$PATH:$$HOME/.cargo/bin; \
 	for rock in $(DEV_ROCKS) ; do \
 	  if luarocks list --porcelain $$rock | grep -q "installed" ; then \
 		echo $$rock already installed, skipping ; \

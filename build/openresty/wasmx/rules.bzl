@@ -1,26 +1,17 @@
 load("//build/openresty/wasmx:wasmx_repositories.bzl", "wasm_runtimes")
 
 wasmx_configure_options = select({
-    "@kong//:wasmx_el7_workaround_flag": [
-        # bypass "multiple definitions of 'assertions'" linker error from wasm.h:
-        # https://github.com/WebAssembly/wasm-c-api/blob/master/include/wasm.h#L29
-        # and ensure a more recent libstdc++ is found
-        # https://github.com/Kong/ngx_wasm_module/blob/main/assets/release/Dockerfiles/Dockerfile.amd64.centos7#L28-L31
-        "--with-ld-opt=\"-Wl,--allow-multiple-definition -L/opt/rh/devtoolset-8/root/usr/lib/gcc/x86_64-redhat-linux/8\"",
-    ],
-    "//conditions:default": [],
-}) + select({
     "@kong//:wasmx_flag": [
         "--with-cc-opt=\"-DNGX_WASM_HOST_PROPERTY_NAMESPACE=kong\"",
     ],
     "//conditions:default": [],
 }) + select({
     "@kong//:wasmx_static_mod": [
-        "--add-module=$$EXT_BUILD_ROOT$$/external/ngx_wasm_module",
+        "--add-module=$$EXT_BUILD_ROOT$$/external/ngx_wasmx_module",
     ],
     "@kong//:wasmx_dynamic_mod": [
         "--with-compat",
-        "--add-dynamic-module=$$EXT_BUILD_ROOT$$/external/ngx_wasm_module",
+        "--add-dynamic-module=$$EXT_BUILD_ROOT$$/external/ngx_wasmx_module",
     ],
     "//conditions:default": [],
 })

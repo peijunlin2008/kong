@@ -25,6 +25,32 @@ for _, module in ipairs(modules) do
   end
 end
 
+-- get a session from the logs with a timeout
+-- throws error if no request is recieved within the timeout
+-- @treturn table the session
+function http_mock:get_session()
+  local ret
+  self.eventually:has_session_satisfy(function(s)
+    ret = s
+    return true
+  end)
+  return ret
+end
+
+-- get a request from the logs with a timeout
+-- throws error if no request is recieved within the timeout
+-- @treturn table the request
+function http_mock:get_request()
+  return self:get_session().req
+end
+
+-- get a response from the logs with a timeout
+-- throws error if no request is recieved within the timeout
+-- @treturn table the response
+function http_mock:get_response()
+  return self:get_session().resp
+end
+
 local http_mock_MT = { __index = http_mock, __gc = http_mock.stop }
 
 
@@ -92,8 +118,15 @@ end
 -- client:send({})
 -- local logs = mock:retrieve_mocking_logs() -- get all the logs of HTTP sessions
 -- mock:stop()
--- @usage
--- -- routes can be a table like this:
+--
+-- listens can be a number, which will be used as the port of the mock server;
+-- or a string, which will be used as the param of listen directive of the mock server;
+-- or a table represents multiple listen ports.
+-- if the port is not specified, a random port will be used.
+-- call mock:get_default_port() to get the first port the mock server listens to.
+-- if the port is a number and opts.tls is set to ture, ssl will be appended.
+--
+-- routes can be a table like this:
 -- routes = {
 --   ["/"] = {
 --     access = [[
@@ -161,6 +194,7 @@ function http_mock.new(listens, routes, opts)
     listens = listens,
     routes = routes,
     directives = directives,
+    dicts = opts.dicts,
     init = opts.init,
     log_opts = log_opts,
     logs = {},
@@ -207,11 +241,11 @@ end
 
 --- make assertions on HTTP requests.
 -- with a timeout to wait for the requests to arrive
--- @class http_mock.eventually
+-- @table http_mock.eventually
 
 --- assert if the condition is true for one of the logs.
--- Replace "session" in the name of the function to assert on fields of the log.
--- The field can be one of "session", "request", "response", "error".
+--- Replace "session" in the name of the function to assert on fields of the log.
+--- The field can be one of "session", "request", "response", "error".
 -- @function http_mock.eventually:has_session_satisfy
 -- @tparam function check the check function, accept a log and throw error if the condition is not satisfied
 

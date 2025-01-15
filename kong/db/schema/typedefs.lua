@@ -1,12 +1,15 @@
 --- A library of ready-to-use type synonyms to use in schema definitions.
 -- @module kong.db.schema.typedefs
-local utils = require "kong.tools.utils"
 local queue_schema = require "kong.tools.queue_schema"
+local propagation_schema = require "kong.observability.tracing.propagation.schema"
 local openssl_pkey = require "resty.openssl.pkey"
 local openssl_x509 = require "resty.openssl.x509"
 local Schema = require "kong.db.schema"
 local socket_url = require "socket.url"
 local constants = require "kong.constants"
+local tools_ip = require "kong.tools.ip"
+local validate_utf8 = require("kong.tools.string").validate_utf8
+local tools_http = require "kong.tools.http"
 
 
 local DAO_MAX_TTL = constants.DATABASE.DAO_MAX_TTL
@@ -19,7 +22,7 @@ local type = type
 
 
 local function validate_host(host)
-  local res, err_or_port = utils.normalize_ip(host)
+  local res, err_or_port = tools_ip.normalize_ip(host)
   if type(err_or_port) == "string" and err_or_port ~= "invalid port number" then
     return nil, "invalid value: " .. host
   end
@@ -33,13 +36,13 @@ end
 
 
 local function validate_host_with_optional_port(host)
-  local res, err_or_port = utils.normalize_ip(host)
+  local res, err_or_port = tools_ip.normalize_ip(host)
   return (res and true or nil), err_or_port
 end
 
 
 local function validate_ip(ip)
-  if utils.is_valid_ip(ip) then
+  if tools_ip.is_valid_ip(ip) then
     return true
   end
 
@@ -48,7 +51,7 @@ end
 
 
 local function validate_ip_or_cidr(ip_or_cidr)
-  if utils.is_valid_ip_or_cidr(ip_or_cidr) then
+  if tools_ip.is_valid_ip_or_cidr(ip_or_cidr) then
     return true
   end
 
@@ -57,7 +60,7 @@ end
 
 
 local function validate_ip_or_cidr_v4(ip_or_cidr_v4)
-  if utils.is_valid_ip_or_cidr_v4(ip_or_cidr_v4) then
+  if tools_ip.is_valid_ip_or_cidr_v4(ip_or_cidr_v4) then
     return true
   end
 
@@ -102,7 +105,7 @@ end
 
 
 local function validate_utf8_string(str)
-  local ok, index = utils.validate_utf8(str)
+  local ok, index = validate_utf8(str)
 
   if not ok then
     return nil, "invalid utf-8 character sequence detected at position " .. tostring(index)
@@ -149,7 +152,7 @@ end
 
 
 local function validate_sni(host)
-  local res, err_or_port = utils.normalize_ip(host)
+  local res, err_or_port = tools_ip.normalize_ip(host)
   if type(err_or_port) == "string" and err_or_port ~= "invalid port number" then
     return nil, "invalid value: " .. host
   end
@@ -167,14 +170,14 @@ end
 
 
 local function validate_wildcard_host(host)
-  local idx = string.find(host, "*", nil, true)
+  local idx = host:find("*", nil, true)
   if idx then
     if idx ~= 1 and idx ~= #host then
       return nil, "wildcard must be leftmost or rightmost character"
     end
 
     -- substitute wildcard for upcoming host normalization
-    local mock_host, count = string.gsub(host, "%*", "wildcard")
+    local mock_host, count = gsub(host, "%*", "wildcard")
     if count > 1 then
       return nil, "only one wildcard must be specified"
     end
@@ -182,7 +185,7 @@ local function validate_wildcard_host(host)
     host = mock_host
   end
 
-  local res, err_or_port = utils.normalize_ip(host)
+  local res, err_or_port = tools_ip.normalize_ip(host)
   if type(err_or_port) == "string" and err_or_port ~= "invalid port number" then
     return nil, "invalid value: " .. host
   end
@@ -331,9 +334,17 @@ typedefs.url = Schema.define {
   description = "A string representing a URL, such as https://example.com/path/to/resource?q=search."
 }
 
+
+typedefs.cookie_name = Schema.define {
+  type = "string",
+  custom_validator = tools_http.validate_cookie_name,
+  description = "A string representing an HTTP token defined by RFC 2616."
+}
+
+-- should we also allow all http token for this?
 typedefs.header_name = Schema.define {
   type = "string",
-  custom_validator = utils.validate_header_name,
+  custom_validator = tools_http.validate_header_name,
   description = "A string representing an HTTP header name."
 }
 
@@ -447,6 +458,11 @@ typedefs.tags = Schema.define {
   description = "A set of strings representing tags."
 }
 
+typedefs.capability = Schema.define {
+  type = "string",
+  description = "A string representing an RPC capability."
+}
+
 local http_protocols = {}
 for p, s in pairs(constants.PROTOCOLS_WITH_SUBSYSTEM) do
   if s == "http" then
@@ -477,7 +493,7 @@ typedefs.protocols_http = Schema.define {
 -- common for routes and routes subschemas
 
 local function validate_host_with_wildcards(host)
-  local no_wildcards = string.gsub(host, "%*", "abc")
+  local no_wildcards = gsub(host, "%*", "abc")
   return typedefs.host_with_optional_port.custom_validator(no_wildcards)
 end
 
@@ -646,20 +662,34 @@ local function validate_pem_keys(values)
   local private_key = values.private_key
 
   -- unless it's a vault reference
-  if kong.vault.is_reference(private_key) or
-     kong.vault.is_reference(public_key) then
+  if kong and (
+     kong.vault.is_reference(private_key) or
+     kong.vault.is_reference(public_key)) then
     return true
   end
 
-  local pk, err = openssl_pkey.new(public_key, { format = "PEM" })
-  if not pk or err then
-    return false, "could not load public key"
+  local pubkey, privkey, err
+
+  if public_key and public_key ~= null then
+    pubkey, err = openssl_pkey.new(public_key, { format = "PEM", type = "pu" })
+    if not pubkey or err then
+      return false, "could not load public key"
+    end
   end
 
-  local ppk, perr = openssl_pkey.new(private_key, { format = "PEM" })
-  if not ppk or perr then
-    return false, "could not load private key" .. (perr or "")
+  if private_key and private_key ~= null then
+    privkey, err = openssl_pkey.new(private_key, { format = "PEM", type = "pr" })
+    if not privkey or err then
+      return false, "could not load private key" .. (err or "")
+    end
   end
+
+  if privkey and pubkey then
+    if privkey:to_PEM("public") ~= pubkey:to_PEM() then
+      return false, "public key does not match private key"
+    end
+  end
+
   return true
 end
 
@@ -682,6 +712,9 @@ typedefs.pem = Schema.define {
         required = false,
       },
     },
+  },
+  entity_checks = {
+    { at_least_one_of = { "private_key", "public_key" } }
   },
   custom_validator = validate_pem_keys,
   description = "A pair of PEM-encoded public and private keys, which can be either a string or a reference to a credential in Kong Vault. If provided as strings, they must be valid PEM-encoded keys."
@@ -856,6 +889,8 @@ typedefs.jwk = Schema.define {
 }
 
 typedefs.queue = queue_schema
+
+typedefs.propagation = propagation_schema
 
 local function validate_lua_expression(expression)
   local sandbox = require "kong.tools.sandbox"

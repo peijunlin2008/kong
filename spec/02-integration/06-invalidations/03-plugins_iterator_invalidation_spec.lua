@@ -1,6 +1,6 @@
 local cjson   = require "cjson"
 local helpers = require "spec.helpers"
-local utils   = require "kong.tools.utils"
+local uuid   = require("kong.tools.uuid").uuid
 
 
 local POLL_INTERVAL = 0.3
@@ -88,7 +88,7 @@ for _, strategy in helpers.each_strategy() do
         path    = "/routes",
         body    = {
           protocols = { "http" },
-          hosts     = { "dummy.com" },
+          hosts     = { "dummy.test" },
           service   = {
             id = service_fixture.id,
           }
@@ -176,7 +176,7 @@ for _, strategy in helpers.each_strategy() do
           method  = "GET",
           path    = "/status/200",
           headers = {
-            host = "dummy.com",
+            host = "dummy.test",
           }
         })
         assert.res_status(200, res_1)
@@ -201,7 +201,7 @@ for _, strategy in helpers.each_strategy() do
           method  = "GET",
           path    = "/status/200",
           headers = {
-            host = "dummy.com",
+            host = "dummy.test",
           }
         })
         assert.res_status(200, res_2)
@@ -273,7 +273,7 @@ for _, strategy in helpers.each_strategy() do
         -- A regression test for https://github.com/Kong/kong/issues/4191
         local admin_res_plugin = assert(admin_client_1:send {
           method = "PUT",
-          path   = "/plugins/" .. utils.uuid(),
+          path   = "/plugins/" .. uuid(),
           body   = {
             name    = "dummy",
             service = { id = service_fixture.id },

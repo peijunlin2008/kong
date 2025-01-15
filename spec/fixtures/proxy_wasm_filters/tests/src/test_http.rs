@@ -20,6 +20,33 @@ impl TestHttp {
         }
     }
 
+    fn set_prop(&self, ns: &str, prop: &str, value: Option<&str>) {
+        let value: Option<&[u8]> = value.map(|v| v.as_bytes());
+        self.set_property(vec![ns, prop], value);
+    }
+
+    fn update_metrics(&self) {
+        let base: u64 = 2;
+
+        let s_name = self.get_prop("kong", "service_name");
+        let r_name = self.get_prop("kong", "route_name");
+
+        let labeled_c = format!("a_labeled_counter_s_id={}_r_id={}", s_name, r_name);
+        let labeled_g = format!("a_labeled_gauge_s_id={}_r_id={}", s_name, r_name);
+        let labeled_h = format!("a_labeled_histogram_s_id={}_r_id={}", s_name, r_name);
+
+        metrics::increment_counter("a_counter").unwrap();
+        metrics::increment_counter(&labeled_c).unwrap();
+
+        metrics::record_gauge("a_gauge", 1).unwrap();
+        metrics::record_gauge(&labeled_g, 1).unwrap();
+
+        for i in 0..18 {
+            metrics::record_histogram("a_histogram", base.pow(i)).unwrap();
+            metrics::record_histogram(&labeled_h, base.pow(i)).unwrap();
+        }
+    }
+
     fn send_http_dispatch(&mut self, config: TestConfig) -> Action {
         let mut timeout = Duration::from_secs(0);
         let mut headers = Vec::new();
@@ -93,11 +120,14 @@ impl TestHttp {
         if cur_phase == on_phase {
             info!("[proxy-wasm] testing in \"{:?}\"", on_phase);
 
-            self.set_http_request_header(INPUT_HEADER_NAME, None);
-            self.set_http_request_header(TEST_HEADER_NAME, None);
-            self.set_http_request_header(PHASE_HEADER_NAME, None);
+            if cur_phase == TestPhase::RequestHeaders || cur_phase == TestPhase::RequestBody {
+                self.set_http_request_header(INPUT_HEADER_NAME, None);
+                self.set_http_request_header(TEST_HEADER_NAME, None);
+                self.set_http_request_header(PHASE_HEADER_NAME, None);
 
-            add_request_header(self);
+                add_request_header(self);
+            }
+
             add_response_header(self);
 
             if let Some(test) = opt_test {
@@ -112,11 +142,27 @@ impl TestHttp {
                         info!("[proxy-wasm] kong.{}: \"{:?}\"", name, value);
                         self.send_plain_response(StatusCode::OK, Some(&value))
                     }
+                    "set_kong_property" => {
+                        if let Some(input) = opt_input {
+                            let (key, value) = match input.split_once('=') {
+                                Some((key, value)) => (key, Some(value)),
+                                None => (input.as_ref(), None),
+                            };
+
+                            self.set_prop("kong", key, value);
+                            info!("[proxy-wasm] kong.{} = \"{:?}\"", key, value);
+                        }
+                    }
                     "echo_http_dispatch" => {
                         let config = TestConfig::from_str(&opt_input.unwrap_or("".to_string()))
                             .expect("invalid configuration");
 
                         return self.send_http_dispatch(config);
+                    }
+                    "update_metrics" => self.update_metrics(),
+                    "dump_config" => {
+                        let res = self.config.as_ref().map(|config| config.to_string());
+                        self.send_plain_response(StatusCode::OK, res.as_deref());
                     }
                     _ => (),
                 }

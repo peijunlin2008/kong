@@ -1,6 +1,8 @@
 local helpers = require "spec.helpers"
+local ssl_fixtures = require "spec.fixtures.ssl"
 local cjson = require "cjson"
 local constants = require "kong.constants"
+local Errors  = require "kong.db.errors"
 
 local UUID_PATTERN = "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x"
 
@@ -18,7 +20,7 @@ describe("Admin API - Kong routes with strategy #" .. strategy, function()
     helpers.get_db_utils(nil, {}) -- runs migrations
     assert(helpers.start_kong {
       database = strategy,
-      plugins = "bundled,reports-api",
+      plugins = "bundled,reports-api,dummy",
       pg_password = "hide_me"
     })
     client = helpers.admin_client(10000)
@@ -69,7 +71,7 @@ describe("Admin API - Kong routes with strategy #" .. strategy, function()
       assert.not_nil(res.headers["X-Kong-Admin-Latency"])
     end)
 
-    it("returns Kong's version number and tagline", function()
+    it("returns Kong's version number, edition info and tagline", function()
       local res = assert(client:send {
         method = "GET",
         path = "/"
@@ -77,6 +79,7 @@ describe("Admin API - Kong routes with strategy #" .. strategy, function()
       local body = assert.res_status(200, res)
       local json = cjson.decode(body)
       assert.equal(meta._VERSION, json.version)
+      assert.equal(meta._VERSION:match("enterprise") and "enterprise" or "community", json.edition)
       assert.equal("Welcome to kong", json.tagline)
     end)
     it("returns a UUID as the node_id", function()
@@ -462,6 +465,40 @@ describe("Admin API - Kong routes with strategy #" .. strategy, function()
     end)
   end)
 
+  describe("/schemas/vaults/:name", function()
+    it("returns schema of all vaults", function()
+      for _, vault in ipairs({"env"}) do
+        local res = assert(client:send {
+          method = "GET",
+          path = "/schemas/vaults/" .. vault,
+        })
+        local body = assert.res_status(200, res)
+        local json = cjson.decode(body)
+        assert.is_table(json.fields)
+      end
+    end)
+
+    it("returns 404 on a non-existent vault", function()
+      local res = assert(client:send {
+        method = "GET",
+        path = "/schemas/vaults/not-present",
+      })
+      local body = assert.res_status(404, res)
+      local json = cjson.decode(body)
+      assert.same({ message = "No vault named 'not-present'" }, json)
+    end)
+
+    it("does not return 405 on /schemas/vaults/validate", function()
+      local res = assert(client:send {
+        method = "POST",
+        path = "/schemas/vaults/validate",
+      })
+      local body = assert.res_status(400, res)
+      local json = cjson.decode(body)
+      assert.same("schema violation (name: required field missing)", json.message)
+    end)
+  end)
+
   describe("/schemas/:entity", function()
     it("returns schema of all plugins", function()
       for plugin, _ in pairs(helpers.test_conf.loaded_plugins) do
@@ -483,6 +520,30 @@ describe("Admin API - Kong routes with strategy #" .. strategy, function()
       local json = cjson.decode(body)
       assert.same({ message = "No plugin named 'not-present'" }, json)
     end)
+    it("returns information about a deprecated field", function()
+      local res = assert(client:send {
+        method = "GET",
+        path = "/schemas/plugins/dummy",
+      })
+      local body = assert.res_status(200, res)
+      local json = cjson.decode(body)
+      assert.is_table(json.fields)
+
+      local found = false
+      for _, f in ipairs(json.fields) do
+        local config_fields = f.config and f.config.fields
+        for _, cf in ipairs(config_fields or {}) do
+          local deprecation = cf.old_field and cf.old_field.deprecation
+          if deprecation then
+            assert.is_string(deprecation.message)
+            assert.is_number(deprecation.old_default)
+            assert.is_string(deprecation.removal_in_version)
+            found = true
+          end
+        end
+      end
+      assert(found)
+    end)
   end)
 
   describe("/schemas/:db_entity_name/validate", function()
@@ -495,6 +556,45 @@ describe("Admin API - Kong routes with strategy #" .. strategy, function()
       local json = cjson.decode(body)
       assert.equal("schema validation successful", json.message)
     end)
+ 
+    it("returns 200 on certificates schema with snis", function()
+
+      local res = assert(client:post("/schemas/certificates/validate", {
+        body = {
+          cert = ssl_fixtures.cert,
+          key  = ssl_fixtures.key,
+          snis = {"a", "b", "c" },
+        },
+        headers = { ["Content-Type"] = "application/json" }
+      }))
+      local body = assert.res_status(200, res)
+      local json = cjson.decode(body)
+      assert.equal("schema validation successful", json.message)
+    end)
+    
+    it("returns 400 on certificates schema with invalid snis", function()
+
+      local res = assert(client:post("/schemas/certificates/validate", {
+        body = {
+          cert = ssl_fixtures.cert,
+          key  = ssl_fixtures.key,
+          snis = {"120.0.9.32:90" },
+        },
+        headers = { ["Content-Type"] = "application/json" }
+      }))
+      local body = assert.res_status(400, res)
+      local json = cjson.decode(body)
+      local expected_body = {
+        fields= {
+          snis= { "must not be an IP" }
+        },
+        name= "schema violation",
+        message= "schema violation (snis.1: must not be an IP)",
+        code= Errors.codes.SCHEMA_VIOLATION,
+      }
+      assert.same(expected_body, json)
+    end)
+
     it("returns 200 on a valid plugin schema", function()
       local res = assert(client:post("/schemas/plugins/validate", {
         body = {

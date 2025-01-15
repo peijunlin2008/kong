@@ -1,5 +1,6 @@
+local kong_meta = require "kong.meta"
 local conf_loader = require "kong.conf_loader"
-local utils = require "kong.tools.utils"
+local log = require "kong.cmd.utils.log"
 local helpers = require "spec.helpers"
 local tablex = require "pl.tablex"
 local pl_path = require "pl.path"
@@ -13,6 +14,11 @@ ffi.cdef([[
   struct group *getgrnam(const char *name);
   struct passwd *getpwnam(const char *name);
 ]])
+
+
+local KONG_VERSION = string.format("%d.%d",
+                                   kong_meta._VERSION_TABLE.major,
+                                   kong_meta._VERSION_TABLE.minor)
 
 
 local function kong_user_group_exists()
@@ -64,7 +70,10 @@ describe("Configuration loader", function()
     assert.same({}, conf.admin_gui_ssl_cert_key)
     assert.same({}, conf.status_ssl_cert)
     assert.same({}, conf.status_ssl_cert_key)
+    assert.same(nil, conf.privileged_agent)
+    assert.same(true, conf.dedicated_config_processing)
     assert.same(false, conf.allow_debug_header)
+    assert.same(KONG_VERSION, conf.lmdb_validation_tag)
     assert.is_nil(getmetatable(conf))
   end)
   it("loads a given file, with higher precedence", function()
@@ -82,6 +91,7 @@ describe("Configuration loader", function()
     assert.same({"127.0.0.1:9001"}, conf.admin_listen)
     assert.same({"0.0.0.0:9000", "0.0.0.0:9443 http2 ssl",
                  "0.0.0.0:9002 http2"}, conf.proxy_listen)
+    assert.same(KONG_VERSION, conf.lmdb_validation_tag)
     assert.is_nil(getmetatable(conf))
   end)
   it("preserves default properties if not in given file", function()
@@ -159,7 +169,7 @@ describe("Configuration loader", function()
     assert.equal(8444, conf.admin_listeners[2].port)
     assert.equal(true, conf.admin_listeners[2].ssl)
     assert.equal(true, conf.admin_listeners[2].http2)
-    assert.equal("127.0.0.1:8444 ssl http2 reuseport backlog=16384", conf.admin_listeners[2].listener)
+    assert.equal("127.0.0.1:8444 ssl reuseport backlog=16384", conf.admin_listeners[2].listener)
 
     assert.equal("0.0.0.0", conf.admin_gui_listeners[1].ip)
     assert.equal(8002, conf.admin_gui_listeners[1].port)
@@ -183,7 +193,7 @@ describe("Configuration loader", function()
     assert.equal(8443, conf.proxy_listeners[2].port)
     assert.equal(true, conf.proxy_listeners[2].ssl)
     assert.equal(true, conf.proxy_listeners[2].http2)
-    assert.equal("0.0.0.0:8443 ssl http2 reuseport backlog=16384", conf.proxy_listeners[2].listener)
+    assert.equal("0.0.0.0:8443 ssl reuseport backlog=16384", conf.proxy_listeners[2].listener)
   end)
   it("parses IPv6 from proxy_listen/admin_listen/admin_gui_listen", function()
     local conf = assert(conf_loader(nil, {
@@ -230,27 +240,27 @@ describe("Configuration loader", function()
   it("extracts ssl flags properly when hostnames contain them", function()
     local conf
     conf = assert(conf_loader(nil, {
-      proxy_listen = "ssl.myname.com:8000",
-      admin_listen = "ssl.myname.com:8001",
-      admin_gui_listen = "ssl.myname.com:8002",
+      proxy_listen = "ssl.myname.test:8000",
+      admin_listen = "ssl.myname.test:8001",
+      admin_gui_listen = "ssl.myname.test:8002",
     }))
-    assert.equal("ssl.myname.com", conf.proxy_listeners[1].ip)
+    assert.equal("ssl.myname.test", conf.proxy_listeners[1].ip)
     assert.equal(false, conf.proxy_listeners[1].ssl)
-    assert.equal("ssl.myname.com", conf.admin_listeners[1].ip)
+    assert.equal("ssl.myname.test", conf.admin_listeners[1].ip)
     assert.equal(false, conf.admin_listeners[1].ssl)
-    assert.equal("ssl.myname.com", conf.admin_gui_listeners[1].ip)
+    assert.equal("ssl.myname.test", conf.admin_gui_listeners[1].ip)
     assert.equal(false, conf.admin_gui_listeners[1].ssl)
 
     conf = assert(conf_loader(nil, {
-      proxy_listen = "ssl_myname.com:8000 ssl",
-      admin_listen = "ssl_myname.com:8001 ssl",
-      admin_gui_listen = "ssl_myname.com:8002 ssl",
+      proxy_listen = "ssl_myname.test:8000 ssl",
+      admin_listen = "ssl_myname.test:8001 ssl",
+      admin_gui_listen = "ssl_myname.test:8002 ssl",
     }))
-    assert.equal("ssl_myname.com", conf.proxy_listeners[1].ip)
+    assert.equal("ssl_myname.test", conf.proxy_listeners[1].ip)
     assert.equal(true, conf.proxy_listeners[1].ssl)
-    assert.equal("ssl_myname.com", conf.admin_listeners[1].ip)
+    assert.equal("ssl_myname.test", conf.admin_listeners[1].ip)
     assert.equal(true, conf.admin_listeners[1].ssl)
-    assert.equal("ssl_myname.com", conf.admin_gui_listeners[1].ip)
+    assert.equal("ssl_myname.test", conf.admin_gui_listeners[1].ip)
     assert.equal(true, conf.admin_gui_listeners[1].ssl)
   end)
   it("extracts 'off' from proxy_listen/admin_listen/admin_gui_listen", function()
@@ -274,13 +284,13 @@ describe("Configuration loader", function()
     assert.same({}, conf.admin_gui_listeners)
     -- not off with names containing 'off'
     conf = assert(conf_loader(nil, {
-      proxy_listen = "offshore.com:9000",
-      admin_listen = "offshore.com:9001",
-      admin_gui_listen = "offshore.com:9002",
+      proxy_listen = "offshore.test:9000",
+      admin_listen = "offshore.test:9001",
+      admin_gui_listen = "offshore.test:9002",
     }))
-    assert.same("offshore.com", conf.proxy_listeners[1].ip)
-    assert.same("offshore.com", conf.admin_listeners[1].ip)
-    assert.same("offshore.com", conf.admin_gui_listeners[1].ip)
+    assert.same("offshore.test", conf.proxy_listeners[1].ip)
+    assert.same("offshore.test", conf.admin_listeners[1].ip)
+    assert.same("offshore.test", conf.admin_gui_listeners[1].ip)
   end)
   it("attaches prefix paths", function()
     local conf = assert(conf_loader())
@@ -313,7 +323,7 @@ describe("Configuration loader", function()
     assert.is_nil(errors)
     assert.is_not_nil(conf)
     assert.is_not_nil(conf.admin_gui_origin)
-    assert.equal("http://localhost:8002", conf.admin_gui_origin)
+    assert.same({ "http://localhost:8002" }, conf.admin_gui_origin)
 
     conf, _, errors = conf_loader(nil, {
       admin_gui_url = "https://localhost:8002",
@@ -321,7 +331,7 @@ describe("Configuration loader", function()
     assert.is_nil(errors)
     assert.is_not_nil(conf)
     assert.is_not_nil(conf.admin_gui_origin)
-    assert.equal("https://localhost:8002", conf.admin_gui_origin)
+    assert.same({ "https://localhost:8002" }, conf.admin_gui_origin)
 
     conf, _, errors = conf_loader(nil, {
       admin_gui_url = "http://localhost:8002/manager",
@@ -329,7 +339,16 @@ describe("Configuration loader", function()
     assert.is_nil(errors)
     assert.is_not_nil(conf)
     assert.is_not_nil(conf.admin_gui_origin)
-    assert.equal("http://localhost:8002", conf.admin_gui_origin)
+    assert.same({ "http://localhost:8002" }, conf.admin_gui_origin)
+
+    conf, _, errors = conf_loader(nil, {
+      admin_gui_url = "http://localhost:8002/manager, https://localhost:8445/manager",
+    })
+    assert.is_nil(errors)
+    assert.is_not_nil(conf)
+    assert.is_not_nil(conf.admin_gui_origin)
+    assert.is_table(conf.admin_gui_origin)
+    assert.same({ "http://localhost:8002", "https://localhost:8445" }, conf.admin_gui_origin)
   end)
   it("strips comments ending settings", function()
     local _os_getenv = os.getenv
@@ -632,8 +651,10 @@ describe("Configuration loader", function()
       local conf = assert(conf_loader())
       assert.same({"bundled"}, conf.plugins)
       assert.same({"LAST", "SRV", "A", "CNAME"}, conf.dns_order)
+      assert.same({"A", "SRV"}, conf.resolver_family)
       assert.is_nil(getmetatable(conf.plugins))
       assert.is_nil(getmetatable(conf.dns_order))
+      assert.is_nil(getmetatable(conf.resolver_family))
     end)
     it("trims array values", function()
       local conf = assert(conf_loader("spec/fixtures/to-strip.conf"))
@@ -778,6 +799,31 @@ describe("Configuration loader", function()
       assert.is_nil(err)
       assert.is_table(conf)
     end)
+    it("errors when resolver_address is not a list in ipv4/6[:port] format (new dns)", function()
+      local conf, err = conf_loader(nil, {
+        resolver_address = "1.2.3.4:53;4.3.2.1" -- ; as separator
+      })
+      assert.equal("resolver_address must be a comma separated list in the form of IPv4/6 or IPv4/6:port, got '1.2.3.4:53;4.3.2.1'", err)
+      assert.is_nil(conf)
+
+      conf, err = conf_loader(nil, {
+        resolver_address = "198.51.100.0:53"
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+
+      conf, err = conf_loader(nil, {
+        resolver_address = "[::1]:53"
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+
+      conf, err = conf_loader(nil, {
+        resolver_address = "198.51.100.0,1.2.3.4:53,::1,[::1]:53"
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+    end)
     it("errors when node_id is not a valid uuid", function()
       local conf, err = conf_loader(nil, {
         node_id = "foobar",
@@ -800,6 +846,15 @@ describe("Configuration loader", function()
       assert.equal([[dns_hostsfile: file does not exist]], err)
       assert.is_nil(conf)
     end)
+    it("errors when the hosts file does not exist (new dns)", function()
+      -- new dns
+      local tmpfile = "/a_file_that_does_not_exist"
+      local conf, err = conf_loader(nil, {
+        resolver_hosts_file = tmpfile,
+      })
+      assert.equal([[resolver_hosts_file: file does not exist]], err)
+      assert.is_nil(conf)
+    end)
     it("accepts an existing hosts file", function()
       local tmpfile = require("pl.path").tmpname()  -- this creates the file!
       finally(function() os.remove(tmpfile) end)
@@ -809,12 +864,28 @@ describe("Configuration loader", function()
       assert.is_nil(err)
       assert.equal(tmpfile, conf.dns_hostsfile)
     end)
+    it("accepts an existing hosts file (new dns)", function()
+      local tmpfile = require("pl.path").tmpname()  -- this creates the file!
+      finally(function() os.remove(tmpfile) end)
+      local conf, err = conf_loader(nil, {
+        resolver_hosts_file = tmpfile,
+      })
+      assert.is_nil(err)
+      assert.equal(tmpfile, conf.resolver_hosts_file)
+    end)
     it("errors on bad entries in the order list", function()
       local conf, err = conf_loader(nil, {
         dns_order = "A,CXAME,SRV",
       })
       assert.is_nil(conf)
       assert.equal([[dns_order: invalid entry 'CXAME']], err)
+    end)
+    it("errors on bad entries in the family list", function()
+      local conf, err = conf_loader(nil, {
+        resolver_family = "A,AAAX,SRV",
+      })
+      assert.is_nil(conf)
+      assert.equal([[resolver_family: invalid entry 'AAAX']], err)
     end)
     it("errors on bad entries in headers", function()
       local conf, err = conf_loader(nil, {
@@ -972,6 +1043,8 @@ describe("Configuration loader", function()
           assert.matches(".ca_combined", conf.lua_ssl_trusted_certificate_combined)
         end)
         it("expands the `system` property in lua_ssl_trusted_certificate", function()
+          local utils = require "kong.tools.system"
+
           local old_gstcf = utils.get_system_trusted_certs_filepath
           local old_exists = pl_path.exists
           finally(function()
@@ -1110,6 +1183,18 @@ describe("Configuration loader", function()
           assert.is_table(conf)
 
           local conf, _, errors = conf_loader(nil, {
+            proxy_server = "http://😉.tld",
+          })
+          assert.is_nil(errors)
+          assert.is_table(conf)
+
+          local conf, _, errors = conf_loader(nil, {
+            proxy_server = "http://%F0%9F%98%89.tld",
+          })
+          assert.is_nil(errors)
+          assert.is_table(conf)
+
+          local conf, _, errors = conf_loader(nil, {
             proxy_server = "://localhost:2333",
           })
           assert.contains("proxy_server missing scheme", errors)
@@ -1131,6 +1216,18 @@ describe("Configuration loader", function()
 
           local conf, _, errors = conf_loader(nil, {
             proxy_server = "http://localhost:2333/?a=1",
+          })
+          assert.contains("fragments, query strings or parameters are meaningless in proxy configuration", errors)
+          assert.is_nil(conf)
+
+          local conf, _, errors = conf_loader(nil, {
+            proxy_server = "http://user:password%23@localhost:2333",
+          })
+          assert.is_nil(errors)
+          assert.is_table(conf)
+
+          local conf, _, errors = conf_loader(nil, {
+            proxy_server = "http://user:password#@localhost:2333",
           })
           assert.contains("fragments, query strings or parameters are meaningless in proxy configuration", errors)
           assert.is_nil(conf)
@@ -1230,7 +1327,7 @@ describe("Configuration loader", function()
         it("defines ssl_ciphers by default", function()
           local conf, err = conf_loader(nil, {})
           assert.is_nil(err)
-          assert.equal("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384", conf.ssl_ciphers)
+          assert.equal("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305", conf.ssl_ciphers)
         end)
         it("explicitly defines ssl_ciphers", function()
           local conf, err = conf_loader(nil, {
@@ -1572,19 +1669,19 @@ describe("Configuration loader", function()
           assert.is_nil(err)
           assert.is_table(conf)
 
-          assert.equal("TLSv1.1 TLSv1.2 TLSv1.3", conf.nginx_http_lua_ssl_protocols)
-          assert.equal("TLSv1.1 TLSv1.2 TLSv1.3", conf.nginx_stream_lua_ssl_protocols)
+          assert.equal("TLSv1.2 TLSv1.3", conf.nginx_http_lua_ssl_protocols)
+          assert.equal("TLSv1.2 TLSv1.3", conf.nginx_stream_lua_ssl_protocols)
         end)
 
         it("sets lua_ssl_protocols to user specified value", function()
           local conf, err = conf_loader(nil, {
-            lua_ssl_protocols = "TLSv1.1"
+            lua_ssl_protocols = "TLSv1.2"
           })
           assert.is_nil(err)
           assert.is_table(conf)
 
-          assert.equal("TLSv1.1", conf.nginx_http_lua_ssl_protocols)
-          assert.equal("TLSv1.1", conf.nginx_stream_lua_ssl_protocols)
+          assert.equal("TLSv1.2", conf.nginx_http_lua_ssl_protocols)
+          assert.equal("TLSv1.2", conf.nginx_stream_lua_ssl_protocols)
         end)
 
         it("sets nginx_http_lua_ssl_protocols and nginx_stream_lua_ssl_protocols to different values", function()
@@ -1607,6 +1704,7 @@ describe("Configuration loader", function()
       finally(function()
         os.getenv = _os_getenv -- luacheck: ignore
         package.loaded["kong.conf_loader"] = nil
+        package.loaded["kong.conf_loader.constants"] = nil
         conf_loader = require "kong.conf_loader"
       end)
       os.getenv = function() end -- luacheck: ignore
@@ -1621,12 +1719,61 @@ describe("Configuration loader", function()
       finally(function()
         os.getenv = _os_getenv -- luacheck: ignore
         package.loaded["kong.conf_loader"] = nil
+        package.loaded["kong.conf_loader.constants"] = nil
         conf_loader = require "kong.conf_loader"
       end)
       os.getenv = function() end -- luacheck: ignore
 
       local conf = assert(conf_loader(helpers.test_conf_path))
       assert.equal(DATABASE, conf.database)
+    end)
+    it("should warns user if kong manager is enabled but admin API is not enabled", function ()
+      local spy_log = spy.on(log, "warn")
+
+      finally(function()
+        log.warn:revert()
+        assert:unregister("matcher", "str_match")
+      end)
+
+      assert:register("matcher", "str_match", function (_state, arguments)
+        local expected = arguments[1]
+        return function(value)
+          return string.match(value, expected) ~= nil
+        end
+      end)
+
+      local conf, err = conf_loader(nil, {
+        admin_listen = "off",
+        admin_gui_listen = "off",
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+      assert.spy(spy_log).was_called(0)
+
+      conf, err = conf_loader(nil, {
+        admin_listen = "localhost:8001",
+        admin_gui_listen = "off",
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+      assert.spy(spy_log).was_called(0)
+
+      conf, err = conf_loader(nil, {
+        admin_listen = "localhost:8001",
+        admin_gui_listen = "localhost:8002",
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+      assert.spy(spy_log).was_called(0)
+
+      conf, err = conf_loader(nil, {
+        admin_listen = "off",
+        admin_gui_listen = "localhost:8002",
+      })
+      assert.is_nil(err)
+      assert.is_table(conf)
+      assert.spy(spy_log).was_called(1)
+      assert.spy(spy_log).was_called_with("Kong Manager won't be functional because the Admin API is not listened on any interface")
     end)
   end)
 
@@ -1886,10 +2033,42 @@ describe("Configuration loader", function()
 
   describe("#wasm properties", function()
     local temp_dir, cleanup
+    local user_filters
+    local bundled_filters
+    local all_filters
 
     lazy_setup(function()
       temp_dir, cleanup = helpers.make_temp_dir()
-      assert(helpers.file.write(temp_dir .. "/empty-filter.wasm", "hello!"))
+      assert(helpers.file.write(temp_dir .. "/filter-a.wasm", "hello!"))
+      assert(helpers.file.write(temp_dir .. "/filter-b.wasm", "hello!"))
+
+      user_filters = {
+        {
+          name = "filter-a",
+          path = temp_dir .. "/filter-a.wasm",
+        },
+        {
+          name = "filter-b",
+          path = temp_dir .. "/filter-b.wasm",
+        }
+      }
+
+      do
+        -- for local builds, the bundled filter path is not constant, so we
+        -- must load the config first to discover the path
+        local conf = assert(conf_loader(nil, {
+          wasm = "on",
+          wasm_filters = "bundled",
+        }))
+
+        assert(conf.wasm_bundled_filters_path)
+        bundled_filters = {}
+      end
+
+      all_filters = {}
+      table.insert(all_filters, bundled_filters[1])
+      table.insert(all_filters, user_filters[1])
+      table.insert(all_filters, user_filters[2])
     end)
 
     lazy_teardown(function() cleanup() end)
@@ -1917,12 +2096,7 @@ describe("Configuration loader", function()
         wasm_filters_path = temp_dir,
       })
       assert.is_nil(err)
-      assert.same({
-          {
-              name = "empty-filter",
-              path = temp_dir .. "/empty-filter.wasm",
-          }
-      }, conf.wasm_modules_parsed)
+      assert.same(all_filters, conf.wasm_modules_parsed)
       assert.same(temp_dir, conf.wasm_filters_path)
     end)
 
@@ -1935,6 +2109,96 @@ describe("Configuration loader", function()
       assert.is_nil(conf)
     end)
 
+    it("wasm_filters default", function()
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+      assert.same(all_filters, conf.wasm_modules_parsed)
+      assert.same({ "bundled", "user" }, conf.wasm_filters)
+    end)
+
+    it("wasm_filters = off", function()
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters = "off",
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+      assert.same({}, conf.wasm_modules_parsed)
+    end)
+
+    it("wasm_filters = 'user' allows all user filters", function()
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters = "user",
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+      assert.same(user_filters, conf.wasm_modules_parsed)
+    end)
+
+    it("wasm_filters can allow individual user filters", function()
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters = assert(user_filters[1].name),
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+      assert.same({ user_filters[1] }, conf.wasm_modules_parsed)
+    end)
+
+    it("wasm_filters = 'bundled' allows all bundled filters", function()
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters = "bundled",
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+      assert.same(bundled_filters, conf.wasm_modules_parsed)
+    end)
+
+    -- XXX: we don't have any bundled filters to use for this test
+    pending("prefers user filters to bundled filters when a conflict exists", function()
+      local user_filter = temp_dir .. "/datakit.wasm"
+      assert(helpers.file.write(user_filter, "I'm a happy little wasm filter"))
+      finally(function()
+        assert(os.remove(user_filter))
+      end)
+
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters = "bundled,user",
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+
+      local found = false
+      for _, filter in ipairs(conf.wasm_modules_parsed) do
+        if filter.name == "datakit" then
+          found = true
+          assert.equals(user_filter, filter.path,
+                        "user filter should override the bundled filter")
+        end
+      end
+
+      assert.is_true(found, "expected the user filter to be enabled")
+    end)
+
+    it("populates wasmtime_cache_* properties", function()
+      local conf, err = conf_loader(nil, {
+        wasm = "on",
+        wasm_filters = "bundled,user",
+        wasm_filters_path = temp_dir,
+      })
+      assert.is_nil(err)
+
+      assert.is_string(conf.wasmtime_cache_directory,
+                       "wasmtime_cache_directory was not set")
+      assert.is_string(conf.wasmtime_cache_config_file,
+                       "wasmtime_cache_config_file was not set")
+    end)
   end)
 
   describe("errors", function()
@@ -2010,6 +2274,48 @@ describe("Configuration loader", function()
         worker_consistency = "strict"
       }))
       assert.equal("strict", conf.worker_consistency)
+      assert.equal(nil, err)
+    end)
+
+    it("privileged_agent -> dedicated_config_processing", function()
+      local conf, err = assert(conf_loader(nil, {
+        privileged_agent = "on",
+      }))
+      assert.same(nil, conf.privileged_agent)
+      assert.same(true, conf.dedicated_config_processing)
+      assert.equal(nil, err)
+
+      -- no clobber
+      conf, err = assert(conf_loader(nil, {
+        privileged_agent = "on",
+        dedicated_config_processing = "on",
+      }))
+      assert.same(true, conf.dedicated_config_processing)
+      assert.same(nil, conf.privileged_agent)
+      assert.equal(nil, err)
+
+      conf, err = assert(conf_loader(nil, {
+        privileged_agent = "off",
+        dedicated_config_processing = "on",
+      }))
+      assert.same(true, conf.dedicated_config_processing)
+      assert.same(nil, conf.privileged_agent)
+      assert.equal(nil, err)
+
+      conf, err = assert(conf_loader(nil, {
+        privileged_agent = "on",
+        dedicated_config_processing = "off",
+      }))
+      assert.same(false, conf.dedicated_config_processing)
+      assert.same(nil, conf.privileged_agent)
+      assert.equal(nil, err)
+
+      conf, err = assert(conf_loader(nil, {
+        privileged_agent = "off",
+        dedicated_config_processing = "off",
+      }))
+      assert.same(false, conf.dedicated_config_processing)
+      assert.same(nil, conf.privileged_agent)
       assert.equal(nil, err)
     end)
 
@@ -2170,6 +2476,14 @@ describe("Configuration loader", function()
       local FIELDS = {
         -- CONF_BASIC
         prefix = true,
+        socket_path = true,
+        worker_events_sock = true,
+        stream_worker_events_sock = true,
+        stream_rpc_sock = true,
+        stream_config_sock = true,
+        stream_tls_passthrough_sock = true,
+        stream_tls_terminate_sock = true,
+        cluster_proxy_ssl_terminator_sock = true,
         vaults = true,
         database = true,
         lmdb_environment_path = true,
@@ -2220,7 +2534,7 @@ describe("Configuration loader", function()
       }
       local conf = assert(conf_loader(nil, nil, { pre_cmd = true }))
       for k, _ in pairs(conf) do
-        assert.equal(true, FIELDS[k])
+        assert.equal(true, FIELDS[k], "key " .. k .. " is not in FIELDS")
       end
     end)
   end)
@@ -2377,4 +2691,80 @@ describe("Configuration loader", function()
     end)
   end)
 
+  describe("pluginserver config", function()
+    describe("fails if", function()
+      it("no query_command and not found in default location", function()
+        local _, err = conf_loader(nil, {
+          pluginserver_names = "gopher",
+          -- query_command = {},
+        })
+        assert.is_not_nil(err)
+        assert.matches("query_command undefined for pluginserver gopher", err)
+      end)
+    end)
+    describe("warns if", function()
+      it("no start_command (meaning process is externally maintained)", function()
+        local spy_log = spy.on(log, "warn")
+
+        finally(function()
+          log.warn:revert()
+          assert:unregister("matcher", "str_match")
+        end)
+
+        assert:register("matcher", "str_match", function (_state, arguments)
+          local expected = arguments[1]
+          return function(value)
+            return string.match(value, expected) ~= nil
+          end
+        end)
+
+        local _, err = conf_loader(nil, {
+          pluginserver_names = "gopher",
+          pluginserver_gopher_query_cmd = "gopher -dump",
+        })
+        assert.is_nil(err)
+        assert.spy(spy_log).was_called(1)
+        assert.spy(spy_log).was_called_with("start_command undefined for pluginserver gopher; assuming external process management")
+      end)
+    end)
+    it("fills in default settings", function()
+      -- mock default conf loader path - as we cannot
+      -- reliably write in the default path (/usr/local/bin)
+      package.loaded["kong.conf_loader"] = nil
+      local conf_constants = require"kong.conf_loader.constants"
+      conf_constants.DEFAULT_PLUGINSERVER_PATH = helpers.external_plugins_path .. "/go"
+      local conf_loader = require"kong.conf_loader"
+
+      helpers.build_go_plugins(helpers.external_plugins_path .. "/go")
+
+      finally(function()
+        package.loaded["kong.conf_loader"] = nil
+        package.loaded["kong.conf_loader.constants"] = nil
+      end)
+
+      local conf, err = conf_loader(nil, {
+        pluginserver_names = "go-hello",
+        -- leave out start_command and query_command so that the defaults
+        -- are used
+      })
+      assert.is_nil(err)
+      assert.same("go-hello", conf.pluginservers[1].name)
+      assert.same("./spec/fixtures/external_plugins/go/go-hello -dump", conf.pluginservers[1].query_command)
+      assert.same("./spec/fixtures/external_plugins/go/go-hello", conf.pluginservers[1].start_command)
+      assert.same(conf.prefix .. "/go-hello.socket", conf.pluginservers[1].socket)
+    end)
+    it("accepts custom settings", function()
+      local conf, err = conf_loader(nil, {
+        pluginserver_names = "gopher",
+        pluginserver_gopher_query_cmd = "gopher -dump",
+        pluginserver_gopher_start_cmd = "gopher -p $KONG_PREFIX",
+        pluginserver_gopher_socket = "/foo/bar/gopher.socket",
+      })
+      assert.is_nil(err)
+      assert.same("gopher", conf.pluginservers[1].name)
+      assert.same("gopher -dump", conf.pluginservers[1].query_command)
+      assert.same("gopher -p $KONG_PREFIX", conf.pluginservers[1].start_command)
+      assert.same("/foo/bar/gopher.socket", conf.pluginservers[1].socket)
+    end)
+  end)
 end)

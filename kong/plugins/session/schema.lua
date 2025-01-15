@@ -1,6 +1,6 @@
 local typedefs = require "kong.db.schema.typedefs"
 local Schema = require "kong.db.schema"
-local utils = require "kong.tools.utils"
+local get_rand_bytes = require("kong.tools.rand").get_rand_bytes
 
 
 local char = string.char
@@ -50,10 +50,10 @@ local logout_methods = Schema.define({
 })
 
 
---- kong.utils.random_string with 32 bytes instead
+--- kong.rand.random_string with 32 bytes instead
 -- @returns random string of length 44
 local function random_string()
-  return encode_base64(utils.get_rand_bytes(32, true))
+  return encode_base64(get_rand_bytes(32, true))
       :gsub("/", char(rand(48, 57)))  -- 0 - 10
       :gsub("+", char(rand(65, 90)))  -- A - Z
       :gsub("=", char(rand(97, 122))) -- a - z
@@ -196,6 +196,7 @@ return {
           },
           { response_headers = headers },
           { request_headers = headers },
+          { read_body_for_logout = { type = "boolean", default = false } },
           { logout_methods = logout_methods },
           {
             logout_query_arg = {
@@ -209,6 +210,21 @@ return {
               description = "The POST argument passed to logout requests. Do not change this property.",
               type = "string",
               default = "session_logout"
+            }
+          },
+          {
+            hash_subject = {
+              description = "Whether to hash or not the subject when store_metadata is enabled.",
+              type = "boolean",
+              default = false
+            }
+          },
+          {
+            store_metadata = {
+              description =
+              "Whether to also store metadata of sessions, such as collecting data of sessions for a specific audience belonging to a specific subject.",
+              type = "boolean",
+              default = false
             }
           },
         },

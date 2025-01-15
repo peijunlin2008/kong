@@ -1,11 +1,12 @@
 local Schema = require "kong.db.schema"
 local typedefs = require "kong.db.schema.typedefs"
-local utils = require "kong.tools.utils"
+local normalize_ip = require("kong.tools.ip").normalize_ip
+local validate_utf8 = require("kong.tools.string").validate_utf8
 local null = ngx.null
 
 
 local function get_name_for_error(name)
-  local ok = utils.validate_utf8(name)
+  local ok = validate_utf8(name)
   if not ok then
     return "Invalid name"
   end
@@ -15,7 +16,7 @@ end
 
 
 local validate_name = function(name)
-  local p = utils.normalize_ip(name)
+  local p = normalize_ip(name)
   if not p then
     return nil, get_name_for_error(name) .. "; must be a valid hostname"
   end
@@ -189,7 +190,7 @@ local r =  {
     { hash_fallback = hash_on },
     { hash_on_header = typedefs.header_name, },
     { hash_fallback_header = typedefs.header_name, },
-    { hash_on_cookie = { description = "The cookie name to take the value from as hash input.", type = "string",  custom_validator = utils.validate_cookie_name }, },
+    { hash_on_cookie = typedefs.cookie_name{ description = "The cookie name to take the value from as hash input."}, },
     { hash_on_cookie_path = typedefs.path{ default = "/", }, },
     { hash_on_query_arg = simple_param },
     { hash_fallback_query_arg = simple_param },

@@ -32,5 +32,21 @@ return {
                       description = "The status of the clustering data planes sync.",
                     }
     },
+    { labels = { type = "map",
+                 keys = { type = "string" },
+                 values = { type = "string" },
+                 description = "Custom key value pairs as meta-data for DPs.",
+               },
+    },
+    { cert_details = {
+        type = "record",
+        fields = {
+          { expiry_timestamp = { type = "number", timestamp = true, required = false } }
+        },
+        description = "Certificate details of the DPs.",
+      },
+    },
+    { rpc_capabilities = { type = "set", description = "An array of RPC capabilities this node supports.",
+                           elements = typedefs.capability, } },
   },
 }

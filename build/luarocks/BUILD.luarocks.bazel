@@ -1,6 +1,6 @@
-load("@rules_foreign_cc//foreign_cc:defs.bzl", "configure_make")
 load("@kong//build:build_system.bzl", "kong_template_genrule")
 load("@kong_bindings//:variables.bzl", "KONG_VAR")
+load("@rules_foreign_cc//foreign_cc:defs.bzl", "configure_make")
 
 filegroup(
     name = "all_srcs",
@@ -19,8 +19,8 @@ configure_make(
     configure_in_place = True,
     configure_options = [
         "--lua-suffix=jit",
-        "--with-lua=$$EXT_BUILD_DEPS$$/luajit",
-        "--with-lua-include=$$EXT_BUILD_DEPS$$/luajit/include/luajit-2.1",
+        "--with-lua=$$EXT_BUILD_DEPS/luajit",
+        "--with-lua-include=$$EXT_BUILD_DEPS/luajit/include/luajit-2.1",
     ],
     lib_source = ":all_srcs",
     out_bin_dir = "",
@@ -39,8 +39,8 @@ configure_make(
 kong_template_genrule(
     name = "luarocks_exec",
     srcs = [
-        "@openssl//:openssl",
-        "@libexpat//:libexpat",
+        "@libexpat",
+        "@openssl",
     ] + select({
         "@kong//:any-cross": ["@cross_deps_libyaml//:libyaml"],
         "//conditions:default": [
@@ -90,12 +90,10 @@ kong_template_genrule(
     }),
     is_executable = True,
     output = "luarocks_target.log",
-    progress_message = "Luarocks: Install luarocks on target system",
+    progress_message = "Luarocks: Install luarocks with target configuration",
     substitutions = {
-        "{{build_destdir}}": KONG_VAR["BUILD_DESTDIR"],
         "{{install_destdir}}": KONG_VAR["INSTALL_DESTDIR"],
         "{{luarocks_version}}": KONG_VAR["LUAROCKS"],
-        "{{workspace_path}}": KONG_VAR["WORKSPACE_PATH"],
     },
     template = "@//build/luarocks:templates/luarocks_target.sh",
     tools = [

@@ -1,7 +1,11 @@
 local helpers = require "spec.helpers"
 
+
+for _, v in ipairs({ {"off", "off"}, {"on", "off"}, {"on", "on"}, }) do
+  local rpc, rpc_sync = v[1], v[2]
+
 for _, strategy in helpers.each_strategy({"postgres"}) do
-  describe("Plugin: key-auth (access) [#" .. strategy .. "] auto-expiring keys", function()
+  describe("Plugin: key-auth (access) [#" .. strategy .. " rpc_sync=" .. rpc_sync .. "] auto-expiring keys", function()
     -- Give a bit of time to reduce test flakyness on slow setups
     local ttl = 10
     local inserted_at
@@ -17,7 +21,7 @@ for _, strategy in helpers.each_strategy({"postgres"}) do
       })
 
       local r = bp.routes:insert {
-        hosts = { "key-ttl-hybrid.com" },
+        hosts = { "key-ttl-hybrid.test" },
       }
 
       bp.plugins:insert {
@@ -38,6 +42,8 @@ for _, strategy in helpers.each_strategy({"postgres"}) do
         cluster_listen = "127.0.0.1:9005",
         cluster_telemetry_listen = "127.0.0.1:9006",
         nginx_conf = "spec/fixtures/custom_nginx.template",
+        cluster_rpc = rpc,
+        cluster_rpc_sync = rpc_sync,
       }))
 
       assert(helpers.start_kong({
@@ -50,6 +56,8 @@ for _, strategy in helpers.each_strategy({"postgres"}) do
         cluster_control_plane = "127.0.0.1:9005",
         cluster_telemetry_endpoint = "127.0.0.1:9006",
         proxy_listen = "0.0.0.0:9002",
+        cluster_rpc = rpc,
+        cluster_rpc_sync = rpc_sync,
       }))
     end)
 
@@ -89,7 +97,7 @@ for _, strategy in helpers.each_strategy({"postgres"}) do
           method  = "GET",
           path  = "/status/200",
           headers = {
-            ["Host"] = "key-ttl-hybrid.com",
+            ["Host"] = "key-ttl-hybrid.test",
             ["apikey"] = "kong",
           }
         })
@@ -109,7 +117,7 @@ for _, strategy in helpers.each_strategy({"postgres"}) do
           method  = "GET",
           path  = "/status/200",
           headers = {
-            ["Host"] = "key-ttl-hybrid.com",
+            ["Host"] = "key-ttl-hybrid.test",
             ["apikey"] = "kong",
           }
         })
@@ -120,4 +128,5 @@ for _, strategy in helpers.each_strategy({"postgres"}) do
 
     end)
   end)
-end
+end -- for _, strategy
+end -- for rpc_sync

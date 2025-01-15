@@ -36,20 +36,22 @@ end
 
 describe("[DNS client]", function()
 
-  local client, resolver, query_func
+  local client, resolver
 
   before_each(function()
+    _G.busted_new_dns_client = false
+
     client = require("kong.resty.dns.client")
     resolver = require("resty.dns.resolver")
 
-    -- you can replace this `query_func` upvalue to spy on resolver query calls.
+    -- `resolver.query_func` is hooked to inspect resolver query calls. New values can be assigned to it.
     -- This default will just call the original resolver (hence is transparent)
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       return original_query_func(self, name, options)
     end
 
     -- patch the resolver lib, such that any new resolver created will query
-    -- using the `query_func` upvalue defined above
+    -- using the `resolver.query_func` defined above
     local old_new = resolver.new
     resolver.new = function(...)
       local r, err = old_new(...)
@@ -57,6 +59,11 @@ describe("[DNS client]", function()
         return nil, err
       end
       local original_query_func = r.query
+
+      -- remember the passed in query_func
+      -- so it won't be replaced by the next resolver.new call
+      -- and won't interfere with other tests
+      local query_func = resolver.query_func
       r.query = function(self, ...)
         return query_func(self, original_query_func, ...)
       end
@@ -70,7 +77,6 @@ describe("[DNS client]", function()
     package.loaded["resty.dns.resolver"] = nil
     client = nil
     resolver = nil
-    query_func = nil
   end)
 
   describe("initialization", function()
@@ -583,8 +589,11 @@ describe("[DNS client]", function()
               "127.0.0.1 host"
             }
           }))
-          query_func = function(self, original_query_func, name, options)
-            ngx.sleep(5)
+          resolver.query_func = function(self, original_query_func, name, options)
+            -- The first request uses syncQuery not waiting on the
+            -- aysncQuery timer, so the low-level r:query() could not sleep(5s),
+            -- it can only sleep(timeout).
+            ngx.sleep(math.min(timeout, 5))
             return nil
           end
           local start_time = ngx.now()
@@ -610,7 +619,7 @@ describe("[DNS client]", function()
       -- KAG-2300 - https://github.com/Kong/kong/issues/10182
       -- If we encounter a timeout while talking to the DNS server, don't keep trying with other record types
       assert(client.init({ timeout = 1000, retrans = 2 }))
-      query_func = function(self, original_query_func, name, options)
+      resolver.query_func = function(self, original_query_func, name, options)
         if options.qtype == client.TYPE_SRV then
           ngx.sleep(10)
         else
@@ -710,7 +719,7 @@ describe("[DNS client]", function()
   it("fetching names case insensitive", function()
     assert(client.init())
 
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       return {
         {
           name = "some.UPPER.case",
@@ -898,7 +907,7 @@ describe("[DNS client]", function()
     assert(client.init())
 
     local callcount = 0
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       callcount = callcount + 1
       return original_query_func(self, name, options)
     end
@@ -946,7 +955,7 @@ describe("[DNS client]", function()
     assert(client.init())
 
     local callcount = 0
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       callcount = callcount + 1
       return original_query_func(self, name, options)
     end
@@ -993,7 +1002,7 @@ describe("[DNS client]", function()
       },
     }
 
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       if name == host and options.qtype == client.TYPE_SRV then
         return entry
       end
@@ -1016,7 +1025,7 @@ describe("[DNS client]", function()
             "nameserver 198.51.100.0",
           },
         }))
-    query_func = function(self, original_query_func, name, opts)
+    resolver.query_func = function(self, original_query_func, name, opts)
       if name ~= "hello.world" and (opts or {}).qtype ~= client.TYPE_CNAME then
         return original_query_func(self, name, opts)
       end
@@ -1496,6 +1505,63 @@ describe("[DNS client]", function()
       assert.is_nil(ip)
       assert.are.equal("recursion detected", port)
     end)
+
+    it("individual_toip - force no sync", function()
+      local resolve_count = 10
+      assert(client.init({
+        noSynchronisation = false,
+        order = { "A" },
+        search = {},
+      }))
+
+      local callcount = 0
+      resolver.query_func = function(self, original_query_func, name, options)
+        callcount = callcount + 1
+        -- Introducing a simulated network delay ensures individual_toip always
+        -- triggers a DNS query to avoid it triggering only once due to a cache
+        -- hit. 0.1 second is enough.
+        ngx.sleep(0.1)
+        return {{ type = client.TYPE_A, address = "1.1.1.1", class = 1, name = name, ttl = 10 } }
+      end
+
+      -- assert synchronisation is working
+      local threads = {}
+      for i=1,resolve_count do
+        threads[i] = ngx.thread.spawn(function()
+          local ip = client.toip("toip.com")
+          assert.is_string(ip)
+        end)
+      end
+
+      for i=1,#threads do
+        ngx.thread.wait(threads[i])
+      end
+
+      -- only one thread must have called the query_func
+      assert.are.equal(1, callcount,
+        "synchronisation failed - out of " .. resolve_count .. " toip() calls " .. callcount ..
+        " queries were made")
+
+      callcount = 0
+      threads = {}
+      for i=1,resolve_count do
+        threads[i] = ngx.thread.spawn(function()
+          local ip = client.individual_toip("individual_toip.com")
+          assert.is_string(ip)
+        end)
+      end
+
+      for i=1,#threads do
+        ngx.thread.wait(threads[i])
+      end
+
+      -- all threads must have called the query_func
+      assert.are.equal(resolve_count, callcount,
+        "force no sync failed - out of " .. resolve_count .. " toip() calls" ..
+        callcount .. " queries were made")
+
+    end)
+
   end)
 
 
@@ -1515,7 +1581,7 @@ describe("[DNS client]", function()
         }))
 
     -- mock query function to return a default record
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       return  {
                 {
                   type = client.TYPE_A,
@@ -1553,7 +1619,7 @@ describe("[DNS client]", function()
 
     -- mock query function to count calls
     local call_count = 0
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       call_count = call_count + 1
       return original_query_func(self, name, options)
     end
@@ -1628,7 +1694,7 @@ describe("[DNS client]", function()
 
     -- mock query function to count calls, and return errors
     local call_count = 0
-    query_func = function(self, original_query_func, name, options)
+    resolver.query_func = function(self, original_query_func, name, options)
       call_count = call_count + 1
       return { errcode = 5, errstr = "refused" }
     end
@@ -1694,7 +1760,7 @@ describe("[DNS client]", function()
       local results = {}
 
       local call_count = 0
-      query_func = function(self, original_query_func, name, options)
+      resolver.query_func = function(self, original_query_func, name, options)
         call_count = call_count + 1
         sleep(0.5) -- make sure we take enough time so the other threads
         -- will be waiting behind this one
@@ -1742,9 +1808,12 @@ describe("[DNS client]", function()
     end)
 
     it("timeout while waiting", function()
+
+      local timeout = 500
+      local ip = "1.4.2.3"
       -- basically the local function _synchronized_query
       assert(client.init({
-        timeout = 500,
+        timeout = timeout,
         retrans = 1,
         resolvConf = {
           -- resolv.conf without `search` and `domain` options
@@ -1754,8 +1823,8 @@ describe("[DNS client]", function()
 
       -- insert a stub thats waits and returns a fixed record
       local name = TEST_DOMAIN
-      query_func = function()
-        local ip = "1.4.2.3"
+      resolver.query_func = function()
+        local ip = ip
         local entry = {
           {
             type = client.TYPE_A,
@@ -1767,7 +1836,9 @@ describe("[DNS client]", function()
           touch = 0,
           expire = gettime() + 10,
         }
-        sleep(0.5) -- wait before we return the results
+        -- wait before we return the results
+        -- `+ 2` s ensures that the semaphore:wait() expires
+        sleep(timeout/1000 + 2)
         return entry
       end
 
@@ -1797,10 +1868,12 @@ describe("[DNS client]", function()
         ngx.thread.wait(coros[i]) -- this wait will resume the scheduled ones
       end
 
-      -- all results are equal, as they all will wait for the first response
-      for i = 1, 10 do
+      -- results[1~9] are equal, as they all will wait for the first response
+      for i = 1, 9 do
         assert.equal("timeout", results[i])
       end
+      -- results[10] comes from synchronous DNS access of the first request
+      assert.equal(ip, results[10][1]["address"])
     end)
   end)
 
@@ -1817,7 +1890,7 @@ describe("[DNS client]", function()
     -- insert a stub thats waits and returns a fixed record
     local call_count = 0
     local name = TEST_DOMAIN
-    query_func = function()
+    resolver.query_func = function()
       local ip = "1.4.2.3"
       local entry = {
         {

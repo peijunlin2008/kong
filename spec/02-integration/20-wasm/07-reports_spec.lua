@@ -3,14 +3,6 @@ local constants = require "kong.constants"
 local cjson = require "cjson"
 
 
-local function json(body)
-  return {
-    headers = { ["Content-Type"] = "application/json" },
-    body = body,
-  }
-end
-
-
 for _, strategy in helpers.each_strategy() do
   local dns_hostsfile
   local reports_server
@@ -30,10 +22,17 @@ for _, strategy in helpers.each_strategy() do
       assert(fd:write("127.0.0.1 " .. constants.REPORTS.ADDRESS))
       assert(fd:close())
 
+      require("kong.runloop.wasm").enable({
+        { name = "tests",
+          path = helpers.test_conf.wasm_filters_path .. "/tests.wasm",
+        },
+      })
+
       local bp = assert(helpers.get_db_utils(strategy, {
         "services",
         "routes",
         "plugins",
+        "filter_chains",
       }, { "reports-api" }))
 
       local http_srv = assert(bp.services:insert {
@@ -51,27 +50,20 @@ for _, strategy in helpers.each_strategy() do
         config = {}
       })
 
-      require("kong.runloop.wasm").enable({
-        { name = "tests" },
+      bp.filter_chains:insert({
+        filters = { { name = "tests" } },
+        service = { id = http_srv.id },
       })
 
       assert(helpers.start_kong({
         nginx_conf = "spec/fixtures/custom_nginx.template",
         database = strategy,
         dns_hostsfile = dns_hostsfile,
+        resolver_hosts_file = dns_hostsfile,
         plugins = "bundled,reports-api",
         wasm = true,
         anonymous_reports = true,
       }))
-
-      local admin = assert(helpers.admin_client())
-      local res = admin:post("/filter-chains", json({
-          filters = { { name = "tests" } },
-          service = { id = http_srv.id },
-        })
-      )
-      assert.res_status(201, res)
-      admin:close()
     end)
 
     lazy_teardown(function()

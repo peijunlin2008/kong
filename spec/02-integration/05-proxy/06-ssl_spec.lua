@@ -2,7 +2,6 @@ local ssl_fixtures = require "spec.fixtures.ssl"
 local helpers      = require "spec.helpers"
 local cjson        = require "cjson"
 local fmt          = string.format
-local atc_compat = require "kong.router.compat"
 
 
 local function get_cert(server_name)
@@ -35,24 +34,7 @@ local fixtures = {
 }
 
 local function reload_router(flavor)
-  _G.kong = {
-    configuration = {
-      router_flavor = flavor,
-    },
-  }
-
-  helpers.setenv("KONG_ROUTER_FLAVOR", flavor)
-
-  package.loaded["spec.helpers"] = nil
-  package.loaded["kong.global"] = nil
-  package.loaded["kong.cache"] = nil
-  package.loaded["kong.db"] = nil
-  package.loaded["kong.db.schema.entities.routes"] = nil
-  package.loaded["kong.db.schema.entities.routes_subschemas"] = nil
-
-  helpers = require "spec.helpers"
-
-  helpers.unsetenv("KONG_ROUTER_FLAVOR")
+  helpers = require("spec.internal.module").reload_helpers(flavor)
 
   fixtures.dns_mock = helpers.dns_mock.new({ mocks_only = true })
   fixtures.dns_mock:A {
@@ -62,18 +44,8 @@ local function reload_router(flavor)
 end
 
 
+-- TODO: remove it when we confirm it is not needed
 local function gen_route(flavor, r)
-  if flavor ~= "expressions" then
-    return r
-  end
-
-  r.expression = atc_compat.get_expression(r)
-  r.priority = tonumber(atc_compat._get_priority(r))
-
-  r.hosts = nil
-  r.paths = nil
-  r.snis  = nil
-
   return r
 end
 
@@ -307,7 +279,7 @@ for _, strategy in helpers.each_strategy() do
           },
         })
         local body = assert.res_status(502, res)
-        assert.equal("An invalid response was received from the upstream server", body)
+        assert.matches("An invalid response was received from the upstream server", body)
         assert.logfile().has.line("upstream SSL certificate verify error: " ..
                                   "(21:unable to verify the first certificate) " ..
                                   "while SSL handshaking to upstream", true, 2)
@@ -397,7 +369,8 @@ for _, strategy in helpers.each_strategy() do
 
         local body = assert.res_status(426, res)
         local json = cjson.decode(body)
-        assert.same({ message = "Please use HTTPS protocol" }, json)
+        assert.not_nil(json)
+        assert.matches("Please use HTTPS protocol", json.message)
         assert.contains("Upgrade", res.headers.connection)
         assert.equal("TLS/1.2, HTTP/1.1", res.headers.upgrade)
 
@@ -412,7 +385,8 @@ for _, strategy in helpers.each_strategy() do
 
         body = assert.res_status(426, res)
         json = cjson.decode(body)
-        assert.same({ message = "Please use HTTPS protocol" }, json)
+        assert.not_nil(json)
+        assert.matches("Please use HTTPS protocol", json.message)
         assert.contains("Upgrade", res.headers.connection)
         assert.equal("TLS/1.2, HTTP/1.1", res.headers.upgrade)
       end)

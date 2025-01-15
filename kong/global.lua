@@ -6,6 +6,7 @@ local phase_checker = require "kong.pdk.private.phases"
 local kong_cache = require "kong.cache"
 local kong_cluster_events = require "kong.cluster_events"
 local private_node = require "kong.pdk.private.node"
+local constants = require "kong.constants"
 
 local ngx = ngx
 local type = type
@@ -68,7 +69,7 @@ end
 
 
 local _GLOBAL = {
-  phases = phase_checker.phases,
+  phases                 = phase_checker.phases,
 }
 
 
@@ -168,28 +169,20 @@ function _GLOBAL.init_pdk(self, kong_config)
 end
 
 
-function _GLOBAL.init_worker_events()
+function _GLOBAL.init_worker_events(kong_config)
   -- Note: worker_events will not work correctly if required at the top of the file.
   --       It must be required right here, inside the init function
   local worker_events
   local opts
 
-  local configuration = kong.configuration
-
-  -- `kong.configuration.prefix` is already normalized to an absolute path,
-  -- but `ngx.config.prefix()` is not
-  local prefix = configuration and
-                 configuration.prefix or
-                 require("pl.path").abspath(ngx.config.prefix())
-
+  local socket_path = kong_config.socket_path
   local sock = ngx.config.subsystem == "stream" and
-               "stream_worker_events.sock" or
-               "worker_events.sock"
+               constants.SOCKETS.STREAM_WORKER_EVENTS or
+               constants.SOCKETS.WORKER_EVENTS
 
-  local listening = "unix:" .. prefix .. "/" .. sock
+  local listening = "unix:" .. socket_path .. "/" .. sock
 
-  local max_payload_len = configuration and
-                          configuration.worker_events_max_payload
+  local max_payload_len = kong_config.worker_events_max_payload
 
   if max_payload_len and max_payload_len > 65535 then   -- default is 64KB
     ngx.log(ngx.WARN,
@@ -197,12 +190,26 @@ function _GLOBAL.init_worker_events()
             "negative impact on Kong's response latency and memory usage")
   end
 
+  local enable_privileged_agent = false
+  if kong_config.dedicated_config_processing and
+     kong_config.role == "data_plane" and
+     not kong.sync  -- for rpc sync there is no privileged_agent
+  then
+    enable_privileged_agent = true
+  end
+
+  -- for debug and test
+  ngx.log(ngx.DEBUG,
+          "lua-resty-events enable_privileged_agent is ",
+          enable_privileged_agent)
+
   opts = {
     unique_timeout = 5,     -- life time of unique event data in lrucache
     broker_id = 0,          -- broker server runs in nginx worker #0
     listening = listening,  -- unix socket for broker listening
     max_queue_len = 1024 * 50,  -- max queue len for events buffering
     max_payload_len = max_payload_len,  -- max payload size in bytes
+    enable_privileged_agent = enable_privileged_agent,
   }
 
   worker_events = require "resty.events.compat"
@@ -249,16 +256,17 @@ function _GLOBAL.init_cache(kong_config, cluster_events, worker_events)
    end
 
   return kong_cache.new({
-    shm_name        = "kong_db_cache",
-    cluster_events  = cluster_events,
-    worker_events   = worker_events,
-    ttl             = db_cache_ttl,
-    neg_ttl         = db_cache_neg_ttl or db_cache_ttl,
-    resurrect_ttl   = kong_config.resurrect_ttl,
-    page            = page,
-    cache_pages     = cache_pages,
-    resty_lock_opts = LOCK_OPTS,
-    lru_size        = get_lru_size(kong_config),
+    shm_name             = "kong_db_cache",
+    cluster_events       = cluster_events,
+    worker_events        = worker_events,
+    ttl                  = db_cache_ttl,
+    neg_ttl              = db_cache_neg_ttl or db_cache_ttl,
+    resurrect_ttl        = kong_config.resurrect_ttl,
+    page                 = page,
+    cache_pages          = cache_pages,
+    resty_lock_opts      = LOCK_OPTS,
+    lru_size             = get_lru_size(kong_config),
+    invalidation_channel = "invalidations",
   })
 end
 
@@ -286,6 +294,11 @@ function _GLOBAL.init_core_cache(kong_config, cluster_events, worker_events)
     resty_lock_opts = LOCK_OPTS,
     lru_size        = get_lru_size(kong_config),
   })
+end
+
+
+function _GLOBAL.init_timing()
+  return require("kong.timing")
 end
 
 

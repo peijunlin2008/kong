@@ -1,4 +1,0 @@
-message: "Restore lapis & luarocks-admin bins"
-type: bugfix
-prs:
-  - 11578

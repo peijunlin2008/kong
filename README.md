@@ -3,7 +3,7 @@
 ![Stars](https://img.shields.io/github/stars/Kong/kong?style=flat-square) ![GitHub commit activity](https://img.shields.io/github/commit-activity/m/Kong/kong?style=flat-square) ![Docker Pulls](https://img.shields.io/docker/pulls/_/kong?style=flat-square) [![Build Status][badge-action-image]][badge-action-url] ![Version](https://img.shields.io/github/v/release/Kong/kong?color=green&label=Version&style=flat-square)  ![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)  ![Twitter Follow](https://img.shields.io/twitter/follow/thekonginc?style=social)
 
 
-**Kong** or **Kong API Gateway** is a cloud-native, platform-agnostic, scalable API Gateway distinguished for its high performance and extensibility via plugins.
+**Kong** or **Kong API Gateway** is a cloud-native, platform-agnostic, scalable API Gateway distinguished for its high performance and extensibility via plugins. It also provides advanced AI capabilities with multi-LLM support.
 
 By providing functionality for proxying, routing, load balancing, health checking, authentication (and [more](#features)), Kong serves as the central layer for orchestrating microservices or conventional API traffic with ease.
 
@@ -11,11 +11,13 @@ Kong runs natively on Kubernetes thanks to its official [Kubernetes Ingress Cont
 
 ---
 
-[Installation](https://konghq.com/install/#kong-community) | [Documentation](https://docs.konghq.com) | [Discussions](https://github.com/Kong/kong/discussions) | [Forum](https://discuss.konghq.com) | [Blog](https://konghq.com/blog) | [Builds][kong-master-builds]
+[Installation](https://konghq.com/install/#kong-community) | [Documentation](https://docs.konghq.com) | [Discussions](https://github.com/Kong/kong/discussions) | [Forum](https://discuss.konghq.com) | [Blog](https://konghq.com/blog) | [Builds][kong-master-builds] | [Cloud Hosted Kong](https://konghq.com/kong-konnect/)
 
 ---
 
 ## Getting Started
+
+If you prefer to use a cloud-hosted Kong, you can [sign up for a free trial of Kong Konnect](https://konghq.com/products/kong-konnect/register?utm_medium=Referral&utm_source=Github&utm_campaign=kong-gateway&utm_content=konnect-promo-in-gateway&utm_term=get-started) and get started in minutes. If not, you can follow the instructions below to get started with Kong on your own infrastructure.
 
 Let’s test drive Kong by adding authentication to an API in under 5 minutes.
 
@@ -38,7 +40,7 @@ The Gateway is now available on the following ports on localhost:
 
 - `:8000` - send traffic to your service via Kong
 - `:8001` - configure Kong using Admin API or via [decK](https://github.com/kong/deck)
-- `:8002` - access Kong's management Web UI (Kong Manager) on [localhost:8002](http://localhost:8002)
+- `:8002` - access Kong's management Web UI ([Kong Manager](https://github.com/Kong/kong-manager)) on [localhost:8002](http://localhost:8002)
 
 Next, follow the [quick start guide](https://docs.konghq.com/gateway-oss/latest/getting-started/configuring-a-service/
 ) to tour the Gateway features.
@@ -52,6 +54,7 @@ The top Kong features include:
 - Authentication and authorization for APIs using methods like JWT, basic auth, OAuth, ACLs and more.
 - Proxy, SSL/TLS termination, and connectivity support for L4 or L7 traffic.
 - Plugins for enforcing traffic controls, rate limiting, req/res transformations, logging, monitoring and including a plugin developer hub.
+- Plugins for AI traffic to support multi-LLM implementations and no-code AI use cases, with advanced AI prompt engineering, AI observability, AI security and more.
 - Sophisticated deployment models like Declarative Databaseless Deployment and Hybrid Deployment (control plane/data plane separation) without any vendor lock-in.
 - Native [ingress controller](https://github.com/Kong/kubernetes-ingress-controller) support for serving Kubernetes.
 
@@ -94,7 +97,7 @@ Kong Inc. offers commercial subscriptions that enhance the Kong API Gateway in a
 ## License
 
 ```
-Copyright 2016-2023 Kong Inc.
+Copyright 2016-2024 Kong Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

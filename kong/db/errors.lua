@@ -2,7 +2,8 @@ local pl_pretty = require("pl.pretty").write
 local pl_keys = require("pl.tablex").keys
 local nkeys = require("table.nkeys")
 local table_isarray = require("table.isarray")
-local utils = require("kong.tools.utils")
+local uuid = require("kong.tools.uuid")
+local json = require("kong.tools.cjson")
 
 
 local type         = type
@@ -21,6 +22,7 @@ local concat       = table.concat
 local sort         = table.sort
 local insert       = table.insert
 local remove       = table.remove
+local new_array    = json.new_array
 
 
 local sorted_keys = function(tbl)
@@ -52,6 +54,7 @@ local ERRORS              = {
   INVALID_FOREIGN_KEY     = 16, -- foreign key is valid for matching a row
   INVALID_WORKSPACE       = 17, -- strategy reports a workspace error
   INVALID_UNIQUE_GLOBAL   = 18, -- unique field value is invalid for global query
+  REFERENCED_BY_OTHERS    = 19, -- still referenced by other entities
 }
 
 
@@ -77,6 +80,7 @@ local ERRORS_NAMES                 = {
   [ERRORS.INVALID_FOREIGN_KEY]     = "invalid foreign key",
   [ERRORS.INVALID_WORKSPACE]       = "invalid workspace",
   [ERRORS.INVALID_UNIQUE_GLOBAL]   = "invalid global query",
+  [ERRORS.REFERENCED_BY_OTHERS]    = "referenced by others",
 }
 
 
@@ -517,6 +521,15 @@ function _M:invalid_unique_global(name)
 end
 
 
+function _M:referenced_by_others(err)
+  if type(err) ~= "string" then
+    error("err must be a string", 2)
+  end
+
+  return new_err_t(self, ERRORS.REFERENCED_BY_OTHERS, err)
+end
+
+
 local flatten_errors
 do
   local function singular(noun)
@@ -709,7 +722,7 @@ do
   ---@param ns?        string
   ---@param flattened? table
   local function categorize_errors(errs, ns, flattened)
-    flattened = flattened or {}
+    flattened = flattened or new_array()
 
     for field, err in drain(errs) do
       local errtype = type(err)
@@ -746,7 +759,7 @@ do
   ---@return string|nil
   local function validate_id(id)
     return (type(id) == "string"
-            and utils.is_valid_uuid(id)
+            and uuid.is_valid_uuid(id)
             and id)
            or nil
   end
@@ -784,12 +797,19 @@ do
   ---@param err_t       table
   ---@param flattened   table
   local function add_entity_errors(entity_type, entity, err_t, flattened)
-    if type(err_t) ~= "table" or nkeys(err_t) == 0 then
+    local err_type = type(err_t)
+
+    -- promote error strings to `@entity` type errors
+    if err_type == "string" then
+      err_t = { ["@entity"] = err_t }
+
+    elseif err_type ~= "table" or nkeys(err_t) == 0 then
       return
+    end
 
     -- this *should* be unreachable, but it's relatively cheap to guard against
     -- compared to everything else we're doing in this code path
-    elseif type(entity) ~= "table" then
+    if type(entity) ~= "table" then
       log(WARN, "could not parse ", entity_type, " errors for non-table ",
                 "input: '", tostring(entity), "'")
       return
@@ -1002,7 +1022,7 @@ do
   ---@param  input table
   ---@return table
   function flatten_errors(input, err_t)
-    local flattened = {}
+    local flattened = new_array()
 
     for entity_type, section_errors in drain(err_t) do
       if type(section_errors) ~= "table" then

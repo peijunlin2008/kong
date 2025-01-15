@@ -1,9 +1,12 @@
 local cjson = require "cjson.safe"
-local utils = require "kong.tools.utils"
+local system = require "kong.tools.system"
+local rand = require "kong.tools.rand"
 local constants = require "kong.constants"
 local counter = require "resty.counter"
 local knode = (kong and kong.node) and kong.node or
               require "kong.pdk.node".new()
+
+local ai_plugin_o11y = require "kong.llm.plugin.observability"
 
 
 local kong_dict = ngx.shared.kong
@@ -52,6 +55,11 @@ local GO_PLUGINS_REQUEST_COUNT_KEY = "events:requests:go_plugins"
 local WASM_REQUEST_COUNT_KEY = "events:requests:wasm"
 
 
+local AI_RESPONSE_TOKENS_COUNT_KEY = "events:ai:response_tokens"
+local AI_PROMPT_TOKENS_COUNT_KEY   = "events:ai:prompt_tokens"
+local AI_REQUEST_COUNT_KEY         = "events:ai:requests"
+
+
 local ROUTE_CACHE_HITS_KEY = "route_cache_hits"
 local STEAM_ROUTE_CACHE_HITS_KEY_POS = STREAM_COUNT_KEY .. ":" .. ROUTE_CACHE_HITS_KEY .. ":pos"
 local STEAM_ROUTE_CACHE_HITS_KEY_NEG = STREAM_COUNT_KEY .. ":" .. ROUTE_CACHE_HITS_KEY .. ":neg"
@@ -59,10 +67,16 @@ local REQUEST_ROUTE_CACHE_HITS_KEY_POS = REQUEST_COUNT_KEY .. ":" .. ROUTE_CACHE
 local REQUEST_ROUTE_CACHE_HITS_KEY_NEG = REQUEST_COUNT_KEY .. ":" .. ROUTE_CACHE_HITS_KEY .. ":neg"
 
 
+local get_header
+if subsystem == "http" then
+  get_header = require("kong.tools.http").get_header
+end
+
+
 local _buffer = {}
 local _ping_infos = {}
 local _enabled = false
-local _unique_str = utils.random_string()
+local _unique_str = rand.random_string()
 local _buffer_immutable_idx
 local _ssl_session
 local _ssl_verify = false
@@ -75,7 +89,7 @@ do
 
   local meta = require "kong.meta"
 
-  local system_infos = utils.get_system_infos()
+  local system_infos = system.get_system_infos()
 
   system_infos.hostname = system_infos.hostname or knode.get_hostname()
 
@@ -233,8 +247,12 @@ local function reset_counter(key, amount)
 end
 
 
-local function incr_counter(key)
-  local ok, err = report_counter:incr(key, 1)
+local function incr_counter(key, hit)
+  if not hit then 
+    hit = 1
+  end
+
+  local ok, err = report_counter:incr(key, hit)
   if not ok then
     log(WARN, "could not increment ", key, " in 'kong' shm: ", err)
   end
@@ -252,7 +270,7 @@ function get_current_suffix(ctx)
   local proxy_mode = var.kong_proxy_mode
   if scheme == "http" or scheme == "https" then
     if proxy_mode == "http" or proxy_mode == "unbuffered" then
-      local http_upgrade = var.http_upgrade
+      local http_upgrade = get_header("upgrade", ctx)
       if http_upgrade and lower(http_upgrade) == "websocket" then
         if scheme == "http" then
           return "ws"
@@ -284,6 +302,12 @@ function get_current_suffix(ctx)
   end
 
   if ctx.KONG_UNEXPECTED then
+    return nil
+  end
+
+  -- 400 case is for invalid requests, eg: if a client sends a HTTP
+  -- request to a HTTPS port, it does not initialized any Nginx variables
+  if proxy_mode == "" and kong.response.get_status() == 400 then
     return nil
   end
 
@@ -320,6 +344,10 @@ local function send_ping(host, port)
     _ping_infos.stream_route_cache_hit_pos = get_counter(STEAM_ROUTE_CACHE_HITS_KEY_POS)
     _ping_infos.stream_route_cache_hit_neg = get_counter(STEAM_ROUTE_CACHE_HITS_KEY_NEG)
 
+    _ping_infos.ai_response_tokens = get_counter(AI_RESPONSE_TOKENS_COUNT_KEY)
+    _ping_infos.ai_prompt_tokens   = get_counter(AI_PROMPT_TOKENS_COUNT_KEY)
+    _ping_infos.ai_reqs            = get_counter(AI_REQUEST_COUNT_KEY)
+
     send_report("ping", _ping_infos, host, port)
 
     reset_counter(STREAM_COUNT_KEY, _ping_infos.streams)
@@ -330,6 +358,9 @@ local function send_ping(host, port)
     reset_counter(WASM_REQUEST_COUNT_KEY, _ping_infos.wasm_reqs)
     reset_counter(STEAM_ROUTE_CACHE_HITS_KEY_POS, _ping_infos.stream_route_cache_hit_pos)
     reset_counter(STEAM_ROUTE_CACHE_HITS_KEY_NEG, _ping_infos.stream_route_cache_hit_neg)
+    reset_counter(AI_RESPONSE_TOKENS_COUNT_KEY, _ping_infos.ai_response_tokens)
+    reset_counter(AI_PROMPT_TOKENS_COUNT_KEY, _ping_infos.ai_prompt_tokens)
+    reset_counter(AI_REQUEST_COUNT_KEY, _ping_infos.ai_reqs)
     return
   end
 
@@ -345,6 +376,10 @@ local function send_ping(host, port)
   _ping_infos.km_visits      = get_counter(KM_VISIT_COUNT_KEY)
   _ping_infos.go_plugin_reqs = get_counter(GO_PLUGINS_REQUEST_COUNT_KEY)
   _ping_infos.wasm_reqs      = get_counter(WASM_REQUEST_COUNT_KEY)
+
+  _ping_infos.ai_response_tokens = get_counter(AI_RESPONSE_TOKENS_COUNT_KEY)
+  _ping_infos.ai_prompt_tokens   = get_counter(AI_PROMPT_TOKENS_COUNT_KEY)
+  _ping_infos.ai_reqs            = get_counter(AI_REQUEST_COUNT_KEY)
 
   _ping_infos.request_route_cache_hit_pos = get_counter(REQUEST_ROUTE_CACHE_HITS_KEY_POS)
   _ping_infos.request_route_cache_hit_neg = get_counter(REQUEST_ROUTE_CACHE_HITS_KEY_NEG)
@@ -365,6 +400,9 @@ local function send_ping(host, port)
   reset_counter(WASM_REQUEST_COUNT_KEY,  _ping_infos.wasm_reqs)
   reset_counter(REQUEST_ROUTE_CACHE_HITS_KEY_POS, _ping_infos.request_route_cache_hit_pos)
   reset_counter(REQUEST_ROUTE_CACHE_HITS_KEY_NEG, _ping_infos.request_route_cache_hit_neg)
+  reset_counter(AI_RESPONSE_TOKENS_COUNT_KEY, _ping_infos.ai_response_tokens)
+  reset_counter(AI_PROMPT_TOKENS_COUNT_KEY, _ping_infos.ai_prompt_tokens)
+  reset_counter(AI_REQUEST_COUNT_KEY, _ping_infos.ai_reqs)
 end
 
 
@@ -487,6 +525,17 @@ return {
 
     if ctx.ran_wasm then
       incr_counter(WASM_REQUEST_COUNT_KEY)
+    end
+
+    local llm_prompt_tokens_count = ai_plugin_o11y.metrics_get("llm_prompt_tokens_count")
+    if llm_prompt_tokens_count then
+      incr_counter(AI_REQUEST_COUNT_KEY)
+      incr_counter(AI_PROMPT_TOKENS_COUNT_KEY, llm_prompt_tokens_count)
+    end
+
+    local llm_response_tokens_count = ai_plugin_o11y.metrics_get("llm_completion_tokens_count")
+    if llm_response_tokens_count then
+      incr_counter(AI_RESPONSE_TOKENS_COUNT_KEY, llm_response_tokens_count)
     end
 
     local suffix = get_current_suffix(ctx)

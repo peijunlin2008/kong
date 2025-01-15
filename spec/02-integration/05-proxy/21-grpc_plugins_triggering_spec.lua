@@ -1,45 +1,17 @@
 local helpers = require "spec.helpers"
 local pl_file = require "pl.file"
-local atc_compat = require "kong.router.compat"
 
 
 local TEST_CONF = helpers.test_conf
 
 
 local function reload_router(flavor)
-  _G.kong = {
-    configuration = {
-      router_flavor = flavor,
-    },
-  }
-
-  helpers.setenv("KONG_ROUTER_FLAVOR", flavor)
-
-  package.loaded["spec.helpers"] = nil
-  package.loaded["kong.global"] = nil
-  package.loaded["kong.cache"] = nil
-  package.loaded["kong.db"] = nil
-  package.loaded["kong.db.schema.entities.routes"] = nil
-  package.loaded["kong.db.schema.entities.routes_subschemas"] = nil
-
-  helpers = require "spec.helpers"
-
-  helpers.unsetenv("KONG_ROUTER_FLAVOR")
+  helpers = require("spec.internal.module").reload_helpers(flavor)
 end
 
 
+-- TODO: remove it when we confirm it is not needed
 local function gen_route(flavor, r)
-  if flavor ~= "expressions" then
-    return r
-  end
-
-  r.expression = atc_compat.get_expression(r)
-  r.priority = tonumber(atc_compat._get_priority(r))
-
-  r.hosts = nil
-  r.paths = nil
-  r.snis  = nil
-
   return r
 end
 
@@ -77,6 +49,7 @@ end
 
 local phrases = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] rewrite phase"] = 1,
   ["%[logger%] access phase"] = 1,
   ["%[logger%] header_filter phase"] = 1,
@@ -86,6 +59,7 @@ local phrases = {
 
 local phrases_ssl = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] certificate phase"] = 1,
   ["%[logger%] rewrite phase"] = 1,
   ["%[logger%] access phase"] = 1,
@@ -109,6 +83,7 @@ local phrases_ssl = {
 
 local phrases_reflection = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] rewrite phase"] = 2,
   ["%[logger%] access phase"] = 2,
   ["%[logger%] header_filter phase"] = 2,
@@ -118,6 +93,7 @@ local phrases_reflection = {
 
 local phrases_ssl_reflection = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] certificate phase"] = 1,
   ["%[logger%] rewrite phase"] = 2,
   ["%[logger%] access phase"] = 2,

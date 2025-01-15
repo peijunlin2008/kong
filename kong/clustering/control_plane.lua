@@ -3,9 +3,7 @@ local _MT = { __index = _M, }
 
 
 local semaphore = require("ngx.semaphore")
-local cjson = require("cjson.safe")
 local declarative = require("kong.db.declarative")
-local utils = require("kong.tools.utils")
 local clustering_utils = require("kong.clustering.utils")
 local compat = require("kong.clustering.compat")
 local constants = require("kong.constants")
@@ -21,27 +19,28 @@ local pairs = pairs
 local ngx = ngx
 local ngx_log = ngx.log
 local timer_at = ngx.timer.at
-local cjson_decode = cjson.decode
-local cjson_encode = cjson.encode
+local json_decode = clustering_utils.json_decode
+local json_encode = clustering_utils.json_encode
 local kong = kong
 local ngx_exit = ngx.exit
 local exiting = ngx.worker.exiting
 local worker_id = ngx.worker.id
 local ngx_time = ngx.time
 local ngx_now = ngx.now
-local ngx_update_time = ngx.update_time
 local ngx_var = ngx.var
 local table_insert = table.insert
 local table_remove = table.remove
 local sub = string.sub
 local isempty = require("table.isempty")
 local sleep = ngx.sleep
+local now_updated = require("kong.tools.time").get_updated_now
 
 
 local plugins_list_to_map = compat.plugins_list_to_map
 local update_compatible_payload = compat.update_compatible_payload
-local deflate_gzip = utils.deflate_gzip
-local yield = utils.yield
+local check_mixed_route_entities = compat.check_mixed_route_entities
+local deflate_gzip = require("kong.tools.gzip").deflate_gzip
+local yield = require("kong.tools.yield").yield
 local connect_dp = clustering_utils.connect_dp
 
 
@@ -77,6 +76,22 @@ local function is_timeout(err)
 end
 
 
+local function is_closed(err)
+  return err and sub(err, -6) == "closed"
+end
+
+
+local function extract_dp_cert(cert)
+  local expiry_timestamp = cert:get_not_after()
+  -- values in cert_details must be strings
+  local cert_details = {
+    expiry_timestamp = expiry_timestamp,
+  }
+
+  return cert_details
+end
+
+
 function _M.new(clustering)
   assert(type(clustering) == "table",
          "kong.clustering is not instantiated")
@@ -109,9 +124,9 @@ function _M:export_deflated_reconfigure_payload()
   end
 
   -- store serialized plugins map for troubleshooting purposes
-  local shm_key_name = "clustering:cp_plugins_configured:worker_" .. worker_id()
-  kong_dict:set(shm_key_name, cjson_encode(self.plugins_configured))
-  ngx_log(ngx_DEBUG, "plugin configuration map key: " .. shm_key_name .. " configuration: ", kong_dict:get(shm_key_name))
+  local shm_key_name = "clustering:cp_plugins_configured:worker_" .. (worker_id() or -1)
+  kong_dict:set(shm_key_name, json_encode(self.plugins_configured))
+  ngx_log(ngx_DEBUG, "plugin configuration map key: ", shm_key_name, " configuration: ", kong_dict:get(shm_key_name))
 
   local config_hash, hashes = calculate_config_hash(config_table)
 
@@ -125,7 +140,7 @@ function _M:export_deflated_reconfigure_payload()
 
   self.reconfigure_payload = payload
 
-  payload, err = cjson_encode(payload)
+  payload, err = json_encode(payload)
   if not payload then
     return nil, err
   end
@@ -163,9 +178,8 @@ function _M:push_config()
     n = n + 1
   end
 
-  ngx_update_time()
-  local duration = ngx_now() - start
-  ngx_log(ngx_DEBUG, _log_prefix, "config pushed to ", n, " data-plane nodes in " .. duration .. " seconds")
+  local duration = now_updated() - start
+  ngx_log(ngx_DEBUG, _log_prefix, "config pushed to ", n, " data-plane nodes in ", duration, " seconds")
 end
 
 
@@ -173,7 +187,7 @@ _M.check_version_compatibility = compat.check_version_compatibility
 _M.check_configuration_compatibility = compat.check_configuration_compatibility
 
 
-function _M:handle_cp_websocket()
+function _M:handle_cp_websocket(cert)
   local dp_id = ngx_var.arg_node_id
   local dp_hostname = ngx_var.arg_node_hostname
   local dp_ip = ngx_var.remote_addr
@@ -196,7 +210,7 @@ function _M:handle_cp_websocket()
       err = "failed to receive websocket basic info data"
 
     else
-      data, err = cjson_decode(data)
+      data, err = json_decode(data)
       if type(data) ~= "table" then
           err = "failed to decode websocket basic info data" ..
                 (err and ": " .. err or "")
@@ -220,21 +234,34 @@ function _M:handle_cp_websocket()
     return ngx_exit(ngx_CLOSE)
   end
 
+  local dp_cert_details = extract_dp_cert(cert)
   local dp_plugins_map = plugins_list_to_map(data.plugins)
   local config_hash = DECLARATIVE_EMPTY_CONFIG_HASH -- initial hash
   local last_seen = ngx_time()
   local sync_status = CLUSTERING_SYNC_STATUS.UNKNOWN
   local purge_delay = self.conf.cluster_data_plane_purge_delay
   local update_sync_status = function()
+    local rpc_peers
+
+    if self.conf.cluster_rpc then
+      rpc_peers = kong.rpc:get_peers()
+    end
+
     local ok
-    ok, err = kong.db.clustering_data_planes:upsert({ id = dp_id, }, {
+    ok, err = kong.db.clustering_data_planes:upsert({ id = dp_id }, {
       last_seen = last_seen,
-      config_hash = config_hash ~= "" and config_hash or nil,
+      config_hash = config_hash ~= ""
+                and config_hash
+                 or DECLARATIVE_EMPTY_CONFIG_HASH,
       hostname = dp_hostname,
       ip = dp_ip,
       version = dp_version,
       sync_status = sync_status, -- TODO: import may have been failed though
-    }, { ttl = purge_delay })
+      labels = data.labels,
+      cert_details = dp_cert_details,
+      -- only update rpc_capabilities if dp_id is connected
+      rpc_capabilities = rpc_peers and rpc_peers[dp_id] or {},
+    }, { ttl = purge_delay, no_broadcast_crud_event = true, })
     if not ok then
       ngx_log(ngx_ERR, _log_prefix, "unable to update clustering data plane status: ", err, log_suffix)
     end
@@ -335,6 +362,10 @@ function _M:handle_cp_websocket()
 
       if not data then
         return nil, "did not receive ping frame from data plane"
+
+      elseif #data ~= 32 then
+        return nil, "received a ping frame from the data plane with an invalid"
+                 .. " hash: '" .. tostring(data) .. "'"
       end
 
       -- dps only send pings
@@ -413,6 +444,15 @@ function _M:handle_cp_websocket()
         goto continue
       end
 
+      ok, err = check_mixed_route_entities(self.reconfigure_payload, dp_version,
+                                           kong and kong.configuration and
+                                           kong.configuration.router_flavor)
+      if not ok then
+        ngx_log(ngx_WARN, _log_prefix, "unable to send updated configuration to data plane: ", err, log_suffix)
+
+        goto continue
+      end
+
       local _, deflated_payload, err = update_compatible_payload(self.reconfigure_payload, dp_version, log_suffix)
 
       if not deflated_payload then -- no modification or err, use the cached payload
@@ -460,7 +500,12 @@ function _M:handle_cp_websocket()
   end
 
   if perr then
-    ngx_log(ngx_ERR, _log_prefix, perr, log_suffix)
+    if is_closed(perr) then
+      ngx_log(ngx_DEBUG, _log_prefix, "data plane closed the connection", log_suffix)
+    else
+      ngx_log(ngx_ERR, _log_prefix, perr, log_suffix)
+    end
+
     return ngx_exit(ngx_ERROR)
   end
 

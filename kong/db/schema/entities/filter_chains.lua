@@ -1,4 +1,5 @@
 local typedefs = require "kong.db.schema.typedefs"
+local filter = require "kong.db.schema.others.wasm_filter"
 local wasm = require "kong.runloop.wasm"
 
 
@@ -7,31 +8,12 @@ local wasm = require "kong.runloop.wasm"
 ---@field id         string
 ---@field name       string|nil
 ---@field enabled    boolean
----@field route      table|nil
----@field service    table|nil
----@field protocols  table|nil
+---@field route      { id: string }|nil
+---@field service    { id: string }|nil
 ---@field created_at number
 ---@field updated_at number
 ---@field tags       string[]
 ---@field filters    kong.db.schema.entities.wasm_filter[]
-
-
----@class kong.db.schema.entities.wasm_filter : table
----
----@field name    string
----@field enabled boolean
----@field config  string|table|nil
-
-
-local filter = {
-  type = "record",
-  fields = {
-    { name    = { type = "string", required = true, one_of = wasm.filter_names,
-                  err = "no such filter", }, },
-    { config  = { type = "string", required = false, }, },
-    { enabled = { type = "boolean", default = true, required = true, }, },
-  },
-}
 
 
 return {

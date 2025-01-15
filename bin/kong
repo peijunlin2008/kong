@@ -1,7 +1,6 @@
 #!/usr/bin/env resty
 
 setmetatable(_G, nil)
-pcall(require, "luarocks.loader")
 package.path = (os.getenv("KONG_LUA_PATH_OVERRIDE") or "") .. "./?.lua;./?/init.lua;" .. package.path
 require("kong.globalpatches")({ cli = true })
 math.randomseed() -- Generate PRNG seed
@@ -32,6 +31,7 @@ local cmds = {
   roar = true,
   hybrid = true,
   vault = true,
+  drain = true,
 }
 
 -- unnecessary to inject nginx directives for these simple cmds
@@ -43,6 +43,7 @@ local skip_inject_cmds = {
   quit = true,
   health = true,
   hybrid = true,
+  drain = true,
 }
 
 for k in pairs(cmds) do
@@ -134,16 +135,22 @@ local args_str = table.concat(args_table, " ")
 local inline_code = string.format([[
 setmetatable(_G, nil)
 
-pcall(require, "luarocks.loader")
-
 package.path = (os.getenv("KONG_LUA_PATH_OVERRIDE") or "") .. "./?.lua;./?/init.lua;" .. package.path
 
 require("kong.cmd.init")("%s", %s)
 ]], cmd_name, args_str)
 
+local resty_ngx_log_level
+if arg.vv then
+  resty_ngx_log_level = "debug"
+elseif arg.v then
+  resty_ngx_log_level = "info"
+end
+
 local resty_cmd = string.format(
-  "resty --main-conf \"%s\" --http-conf \"%s\" --stream-conf \"%s\" -e '%s'",
-  main_conf, http_conf, stream_conf, inline_code)
+  "resty %s --main-conf \"%s\" --http-conf \"%s\" --stream-conf \"%s\" -e '%s'",
+  resty_ngx_log_level and ("--errlog-level " .. resty_ngx_log_level) or "", main_conf,
+  http_conf, stream_conf, inline_code)
 
 local _, code = pl_utils.execute(resty_cmd)
 os.exit(code)

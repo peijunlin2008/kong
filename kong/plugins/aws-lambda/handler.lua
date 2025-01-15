@@ -1,20 +1,24 @@
 -- Copyright (C) Kong Inc.
 
-local fmt = string.format
 local ngx_var = ngx.var
-local ngx_now = ngx.now
-local ngx_update_time = ngx.update_time
+local md5_bin = ngx.md5_bin
+local re_match = ngx.re.match
+local fmt = string.format
+local buffer = require "string.buffer"
+local lrucache = require "resty.lrucache"
 
 local kong = kong
 local meta = require "kong.meta"
 local constants = require "kong.constants"
 local aws_config = require "resty.aws.config" -- reads environment variables, thus specified here
 local VIA_HEADER = constants.HEADERS.VIA
-local VIA_HEADER_VALUE = meta._NAME .. "/" .. meta._VERSION
+local server_tokens = meta._SERVER_TOKENS
 
 local request_util = require "kong.plugins.aws-lambda.request-util"
+local get_now = require("kong.tools.time").get_updated_now_ms
 local build_request_payload = request_util.build_request_payload
 local extract_proxy_response = request_util.extract_proxy_response
+local remove_array_mt_for_empty_table = request_util.remove_array_mt_for_empty_table
 
 local aws = require("resty.aws")
 local AWS_GLOBAL_CONFIG
@@ -22,19 +26,37 @@ local AWS_REGION do
   AWS_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
 end
 local AWS
-local LAMBDA_SERVICE_CACHE = setmetatable({}, { __mode = "k" })
-
-
-local function get_now()
-  ngx_update_time()
-  return ngx_now() * 1000 -- time is kept in seconds with millisecond resolution.
-end
+local LAMBDA_SERVICE_CACHE
 
 
 local function initialize()
+  LAMBDA_SERVICE_CACHE = lrucache.new(1000)
   AWS_GLOBAL_CONFIG = aws_config.global
   AWS = aws()
   initialize = nil
+end
+
+local build_cache_key do
+  -- Use AWS Service related config fields to build cache key
+  -- so that service object can be reused between plugins and
+  -- vault refresh can take effect when key/secret is rotated
+  local SERVICE_RELATED_FIELD = { "timeout", "keepalive", "aws_key", "aws_secret",
+                                  "aws_assume_role_arn", "aws_role_session_name",
+                                  "aws_sts_endpoint_url",
+                                  "aws_region", "host", "port", "disable_https",
+                                  "proxy_url", "aws_imds_protocol_version" }
+
+  build_cache_key = function (conf)
+    local cache_key_buffer = buffer.new(100):reset()
+    for _, field in ipairs(SERVICE_RELATED_FIELD) do
+      local v = conf[field]
+      if v then
+        cache_key_buffer:putf("%s=%s;", field, v)
+      end
+    end
+
+    return md5_bin(cache_key_buffer:get())
+  end
 end
 
 
@@ -45,6 +67,9 @@ local AWSLambdaHandler = {
 
 
 function AWSLambdaHandler:access(conf)
+  -- TRACING: set KONG_WAITING_TIME start
+  local kong_wait_time_start = get_now()
+
   if initialize then
     initialize()
   end
@@ -62,7 +87,8 @@ function AWSLambdaHandler:access(conf)
   local scheme = conf.disable_https and "http" or "https"
   local endpoint = fmt("%s://%s", scheme, host)
 
-  local lambda_service = LAMBDA_SERVICE_CACHE[conf]
+  local cache_key = build_cache_key(conf)
+  local lambda_service = LAMBDA_SERVICE_CACHE:get(cache_key)
   if not lambda_service then
     local credentials = AWS.config.credentials
     -- Override credential config according to plugin config
@@ -101,6 +127,7 @@ function AWSLambdaHandler:access(conf)
         credentials = credentials,
         region = region,
         stsRegionalEndpoints = AWS_GLOBAL_CONFIG.sts_regional_endpoints,
+        endpoint = conf.aws_sts_endpoint_url,
         ssl_verify = false,
         http_proxy = conf.proxy_url,
         https_proxy = conf.proxy_url,
@@ -132,13 +159,10 @@ function AWSLambdaHandler:access(conf)
       http_proxy = conf.proxy_url,
       https_proxy = conf.proxy_url,
     })
-    LAMBDA_SERVICE_CACHE[conf] = lambda_service
+    LAMBDA_SERVICE_CACHE:set(cache_key, lambda_service)
   end
 
   local upstream_body_json = build_request_payload(conf)
-
-  -- TRACING: set KONG_WAITING_TIME start
-  local kong_wait_time_start = get_now()
 
   local res, err = lambda_service:invoke({
     FunctionName = conf.function_name,
@@ -148,20 +172,22 @@ function AWSLambdaHandler:access(conf)
     Qualifier = conf.qualifier,
   })
 
+  -- TRACING: set KONG_WAITING_TIME stop
+  local ctx = ngx.ctx
+  local lambda_wait_time_total = get_now() - kong_wait_time_start
+  -- setting the latency here is a bit tricky, but because we are not
+  -- actually proxying, it will not be overwritten
+  ctx.KONG_WAITING_TIME = lambda_wait_time_total
+  kong.ctx.plugin.waiting_time = lambda_wait_time_total
+
   if err then
     return error(err)
   end
 
   local content = res.body
   if res.status >= 400 then
-    return error(content)
+    return error(content.Message)
   end
-
-  -- TRACING: set KONG_WAITING_TIME stop
-  local ctx = ngx.ctx
-  -- setting the latency here is a bit tricky, but because we are not
-  -- actually proxying, it will not be overwritten
-  ctx.KONG_WAITING_TIME = get_now() - kong_wait_time_start
 
   local headers = res.headers
 
@@ -208,10 +234,39 @@ function AWSLambdaHandler:access(conf)
   headers = kong.table.merge(headers) -- create a copy of headers
 
   if kong.configuration.enabled_headers[VIA_HEADER] then
-    headers[VIA_HEADER] = VIA_HEADER_VALUE
+    local outbound_via = (ngx_var.http2 and "2 " or "1.1 ") .. server_tokens
+    headers[VIA_HEADER] = headers[VIA_HEADER] and headers[VIA_HEADER] .. ", " .. outbound_via
+                          or outbound_via
+  end
+
+  -- TODO: remove this in the next major release
+  -- function to remove array_mt metatables from empty tables
+  -- This is just a backward compatibility code to keep a
+  -- long-lived behavior that Kong responsed JSON objects
+  -- instead of JSON arrays for empty arrays.
+  if conf.empty_arrays_mode == "legacy" then
+    local ct = headers["Content-Type"]
+    -- If Content-Type is specified by multiValueHeader then
+    -- it will be an array, so we need to get the first element
+    if type(ct) == "table" and #ct > 0 then
+      ct = ct[1]
+    end
+
+    if ct and type(ct) == "string" and re_match(ct:lower(), "application/.*json", "jo") then
+      content = remove_array_mt_for_empty_table(content)
+    end
   end
 
   return kong.response.exit(status, content, headers)
+end
+
+
+function AWSLambdaHandler:header_filter(conf)
+  -- TRACING: remove the latency of requesting AWS Lambda service from the KONG_RESPONSE_LATENCY
+  local ctx = ngx.ctx
+  if ctx.KONG_RESPONSE_LATENCY then
+    ctx.KONG_RESPONSE_LATENCY = ctx.KONG_RESPONSE_LATENCY - (kong.ctx.plugin.waiting_time or 0)
+  end
 end
 
 

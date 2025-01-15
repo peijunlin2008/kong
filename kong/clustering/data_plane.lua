@@ -3,30 +3,26 @@ local _MT = { __index = _M, }
 
 
 local semaphore = require("ngx.semaphore")
-local cjson = require("cjson.safe")
 local config_helper = require("kong.clustering.config_helper")
 local clustering_utils = require("kong.clustering.utils")
 local declarative = require("kong.db.declarative")
 local constants = require("kong.constants")
-local utils = require("kong.tools.utils")
-local pl_stringx = require("pl.stringx")
-
+local inspect = require("inspect")
 
 local assert = assert
 local setmetatable = setmetatable
 local math = math
-local pcall = pcall
 local tostring = tostring
 local sub = string.sub
 local ngx = ngx
 local ngx_log = ngx.log
 local ngx_sleep = ngx.sleep
-local cjson_decode = cjson.decode
-local cjson_encode = cjson.encode
+local json_decode = clustering_utils.json_decode
+local json_encode = clustering_utils.json_encode
 local exiting = ngx.worker.exiting
 local ngx_time = ngx.time
-local inflate_gzip = utils.inflate_gzip
-local yield = utils.yield
+local inflate_gzip = require("kong.tools.gzip").inflate_gzip
+local yield = require("kong.tools.yield").yield
 
 
 local ngx_ERR = ngx.ERR
@@ -38,8 +34,9 @@ local PING_INTERVAL = constants.CLUSTERING_PING_INTERVAL
 local PING_WAIT = PING_INTERVAL * 1.5
 local _log_prefix = "[clustering] "
 local DECLARATIVE_EMPTY_CONFIG_HASH = constants.DECLARATIVE_EMPTY_CONFIG_HASH
+local prev_hash
 
-local endswith = pl_stringx.endswith
+local endswith = require("pl.stringx").endswith
 
 local function is_timeout(err)
   return err and sub(err, -7) == "timeout"
@@ -67,6 +64,10 @@ function _M.new(clustering)
     conf = clustering.conf,
     cert = clustering.cert,
     cert_key = clustering.cert_key,
+
+    -- in konnect_mode, reconfigure errors will be reported to the control plane
+    -- via WebSocket message
+    error_reporting = clustering.conf.konnect_mode,
   }
 
   return setmetatable(self, _MT)
@@ -79,10 +80,51 @@ function _M:init_worker(basic_info)
   self.plugins_list = basic_info.plugins
   self.filters = basic_info.filters
 
-  -- only run in process which worker_id() == 0
-  assert(ngx.timer.at(0, function(premature)
-    self:communicate(premature)
-  end))
+  local function start_communicate()
+    assert(ngx.timer.at(0, function(premature)
+      self:communicate(premature)
+    end))
+  end
+
+  -- does not config rpc sync
+  if not kong.sync then
+    -- start communicate()
+    self.run_communicate = true
+
+    start_communicate()
+    return
+  end
+
+  local worker_events = assert(kong.worker_events)
+
+  -- if rpc is ready we will check then decide how to sync
+  worker_events.register(function(capabilities_list)
+    local has_sync_v2
+
+    -- check cp's capabilities
+    for _, v in ipairs(capabilities_list) do
+      if v == "kong.sync.v2" then
+        has_sync_v2 = true
+        break
+      end
+    end
+
+    -- cp supports kong.sync.v2
+    if has_sync_v2 then
+      -- notify communicate() to exit
+      self.run_communicate = false
+      return
+    end
+
+    -- start communicate()
+    self.run_communicate = true
+
+    ngx_log(ngx_WARN, "sync v1 is enabled due to rpc sync can not work.")
+
+    -- only run in process which worker_id() == 0
+    start_communicate()
+
+  end, "clustering:jsonrpc", "connected")
 end
 
 
@@ -91,7 +133,7 @@ local function send_ping(c, log_suffix)
 
   local hash = declarative.get_current_hash()
 
-  if hash == true then
+  if hash == "" or type(hash) ~= "string" then
     hash = DECLARATIVE_EMPTY_CONFIG_HASH
   end
 
@@ -100,8 +142,44 @@ local function send_ping(c, log_suffix)
     ngx_log(is_timeout(err) and ngx_NOTICE or ngx_WARN, _log_prefix,
             "unable to send ping frame to control plane: ", err, log_suffix)
 
-  else
-    ngx_log(ngx_DEBUG, _log_prefix, "sent ping frame to control plane", log_suffix)
+  -- only log a ping if the hash changed
+  elseif hash ~= prev_hash then
+    prev_hash = hash
+    ngx_log(ngx_INFO, _log_prefix, "sent ping frame to control plane with hash: ", hash, log_suffix)
+  end
+end
+
+
+---@param c resty.websocket.client
+---@param err_t kong.clustering.config_helper.update.err_t
+---@param log_suffix? string
+local function send_error(c, err_t, log_suffix)
+  local payload, json_err = json_encode({
+    type = "error",
+    error = err_t,
+  })
+
+  if json_err then
+    json_err = tostring(json_err)
+    ngx_log(ngx_ERR, _log_prefix, "failed to JSON-encode error payload for ",
+            "control plane: ", json_err, ", payload: ", inspect(err_t), log_suffix)
+
+    payload = assert(json_encode({
+      type = "error",
+      error = {
+        name = constants.CLUSTERING_DATA_PLANE_ERROR.GENERIC,
+        message = "failed to encode JSON error payload: " .. json_err,
+        source = "kong.clustering.data_plane.send_error",
+        config_hash = err_t and err_t.config_hash
+                      or DECLARATIVE_EMPTY_CONFIG_HASH,
+      }
+    }))
+  end
+
+  local ok, err = c:send_binary(payload)
+  if not ok then
+    ngx_log(ngx_ERR, _log_prefix, "failed to send error report to control plane: ",
+            err, log_suffix)
   end
 end
 
@@ -119,7 +197,7 @@ function _M:communicate(premature)
 
   local c, uri, err = clustering_utils.connect_cp(self, "/v1/outlet")
   if not c then
-    ngx_log(ngx_ERR, _log_prefix, "connection to control plane ", uri, " broken: ", err,
+    ngx_log(ngx_WARN, _log_prefix, "connection to control plane ", uri, " broken: ", err,
                  " (retrying after ", reconnection_delay, " seconds)", log_suffix)
 
     assert(ngx.timer.at(reconnection_delay, function(premature)
@@ -145,11 +223,11 @@ function _M:communicate(premature)
   -- The CP will make the decision on whether sync will be allowed
   -- based on the received information
   local _
-  _, err = c:send_binary(cjson_encode({ type = "basic_info",
-                                        plugins = self.plugins_list,
-                                        process_conf = configuration,
-                                        filters = self.filters,
-                                        labels = labels, }))
+  _, err = c:send_binary(json_encode({ type = "basic_info",
+                                       plugins = self.plugins_list,
+                                       process_conf = configuration,
+                                       filters = self.filters,
+                                       labels = labels, }))
   if err then
     ngx_log(ngx_ERR, _log_prefix, "unable to send basic information to control plane: ", uri,
                      " err: ", err, " (retrying after ", reconnection_delay, " seconds)", log_suffix)
@@ -182,9 +260,11 @@ function _M:communicate(premature)
   local ping_immediately
   local config_exit
   local next_data
+  local config_err_t
 
   local config_thread = ngx.thread.spawn(function()
-    while not exiting() and not config_exit do
+    -- outside flag will stop the communicate() loop
+    while not exiting() and not config_exit and self.run_communicate do
       local ok, err = config_semaphore:wait(1)
 
       if not ok then
@@ -202,7 +282,7 @@ function _M:communicate(premature)
 
       local msg = assert(inflate_gzip(data))
       yield()
-      msg = assert(cjson_decode(msg))
+      msg = assert(json_decode(msg))
       yield()
 
       if msg.type ~= "reconfigure" then
@@ -213,17 +293,17 @@ function _M:communicate(premature)
                          msg.timestamp and " with timestamp: " .. msg.timestamp or "",
                          log_suffix)
 
-      local config_table = assert(msg.config_table)
+      local err_t
+      ok, err, err_t = config_helper.update(self.declarative_config, msg)
 
-      local pok, res, err = pcall(config_helper.update, self.declarative_config,
-                                  config_table, msg.config_hash, msg.hashes)
-      if pok then
+      if ok then
         ping_immediately = true
-      end
 
-      if not pok or not res then
-        ngx_log(ngx_ERR, _log_prefix, "unable to update running config: ",
-                         (not pok and res) or err)
+      else
+        if self.error_reporting then
+          config_err_t = err_t
+        end
+        ngx_log(ngx_ERR, _log_prefix, "unable to update running config: ", err)
       end
 
       if next_data == data then
@@ -243,6 +323,12 @@ function _M:communicate(premature)
         counter = PING_INTERVAL
 
         send_ping(c, log_suffix)
+      end
+
+      if config_err_t then
+        local err_t = config_err_t
+        config_err_t = nil
+        send_error(c, err_t, log_suffix)
       end
 
       counter = counter - 1
@@ -332,7 +418,7 @@ function _M:communicate(premature)
     ngx_log(ngx_ERR, _log_prefix, perr, log_suffix)
   end
 
-  if not exiting() then
+  if not exiting() and self.run_communicate then
     assert(ngx.timer.at(reconnection_delay, function(premature)
       self:communicate(premature)
     end))

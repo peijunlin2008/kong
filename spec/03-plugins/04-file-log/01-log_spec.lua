@@ -1,10 +1,11 @@
 local cjson         = require "cjson"
-local utils         = require "kong.tools.utils"
 local helpers       = require "spec.helpers"
 local pl_file       = require "pl.file"
-local pl_stringx    = require "pl.stringx"
 local pl_path       = require "pl.path"
 local fmt           = string.format
+local random_string = require("kong.tools.rand").random_string
+local uuid          = require("kong.tools.uuid").uuid
+local strip         = require("kong.tools.string").strip
 
 
 local FILE_LOG_PATH = os.tmpname()
@@ -84,7 +85,7 @@ local function wait_for_json_log_entry()
     .eventually(function()
       local data = assert(pl_file.read(FILE_LOG_PATH))
 
-      data = pl_stringx.strip(data)
+      data = strip(data)
       assert(#data > 0, "log file is empty")
 
       data = data:match("%b{}")
@@ -112,7 +113,7 @@ for _, strategy in helpers.each_strategy() do
       })
 
       local route = bp.routes:insert {
-        hosts = { "file_logging.com" },
+        hosts = { "file_logging.test" },
       }
 
       bp.plugins:insert {
@@ -165,7 +166,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route4 = bp.routes:insert {
-        hosts = { "file_logging_by_lua.com" },
+        hosts = { "file_logging_by_lua.test" },
       }
 
       bp.plugins:insert {
@@ -182,7 +183,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route5 = bp.routes:insert {
-        hosts = { "file_logging2.com" },
+        hosts = { "file_logging2.test" },
       }
 
       bp.plugins:insert {
@@ -195,7 +196,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route6 = bp.routes:insert {
-        hosts = { "file_logging3.com" },
+        hosts = { "file_logging3.test" },
       }
 
       bp.plugins:insert {
@@ -208,7 +209,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route7 = bp.routes:insert {
-        hosts = { "file_logging4.com" },
+        hosts = { "file_logging4.test" },
       }
 
       bp.plugins:insert {
@@ -221,7 +222,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route8 = bp.routes:insert {
-        hosts = { "file_logging5.com" },
+        hosts = { "file_logging5.test" },
       }
 
       bp.plugins:insert {
@@ -234,7 +235,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route9 = bp.routes:insert {
-        hosts = { "file_logging6.com" },
+        hosts = { "file_logging6.test" },
       }
 
       bp.plugins:insert {
@@ -243,6 +244,36 @@ for _, strategy in helpers.each_strategy() do
         config   = {
           path   = "/dev/null",
           reopen = true,
+        },
+      }
+
+      local route10 = bp.routes:insert {
+        hosts = { "file_logging10.test" },
+        response_buffering = true,
+      }
+
+      bp.plugins:insert({
+        name = "pre-function",
+        route = { id = route10.id },
+        config = {
+          access = {
+            [[
+              kong.service.request.enable_buffering()
+            ]],
+          },
+        }
+      })
+
+      bp.plugins:insert {
+        route = { id = route10.id },
+        name     = "file-log",
+        config   = {
+          path   = FILE_LOG_PATH,
+          reopen = true,
+          custom_fields_by_lua = {
+            new_field = "return 123",
+            route = "return nil", -- unset route field
+          },
         },
       }
 
@@ -272,7 +303,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("logs to file", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       -- Making the request
       local res = assert(proxy_client:send({
@@ -280,7 +311,7 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid,
-          ["Host"] = "file_logging.com"
+          ["Host"] = "file_logging.test"
         }
       }))
       assert.res_status(200, res)
@@ -294,7 +325,7 @@ for _, strategy in helpers.each_strategy() do
 
     describe("custom log values by lua", function()
       it("logs custom values to file", function()
-        local uuid = utils.random_string()
+        local uuid = random_string()
 
         -- Making the request
         local res = assert(proxy_client:send({
@@ -302,7 +333,7 @@ for _, strategy in helpers.each_strategy() do
           path = "/status/200",
           headers = {
             ["file-log-uuid"] = uuid,
-            ["Host"] = "file_logging_by_lua.com"
+            ["Host"] = "file_logging_by_lua.test"
           }
         }))
         assert.res_status(200, res)
@@ -316,7 +347,7 @@ for _, strategy in helpers.each_strategy() do
       end)
 
       it("unsets existing log values", function()
-        local uuid = utils.random_string()
+        local uuid = random_string()
 
         -- Making the request
         local res = assert(proxy_client:send({
@@ -324,7 +355,7 @@ for _, strategy in helpers.each_strategy() do
           path = "/status/200",
           headers = {
             ["file-log-uuid"] = uuid,
-            ["Host"] = "file_logging_by_lua.com"
+            ["Host"] = "file_logging_by_lua.test"
           }
         }))
         assert.res_status(200, res)
@@ -336,10 +367,32 @@ for _, strategy in helpers.each_strategy() do
         assert.is_number(log_message.response.size)
         assert.same(nil, log_message.route)
       end)
+      it("correct upstream status when we use response phase", function()
+        local uuid = random_string()
+
+        -- Making the request
+        local res = assert(proxy_client:send({
+          method = "GET",
+          path = "/status/200",
+          headers = {
+            ["file-log-uuid"] = uuid,
+            ["Host"] = "file_logging10.test"
+          }
+        }))
+        assert.res_status(200, res)
+
+        local log_message = wait_for_json_log_entry()
+        assert.same("127.0.0.1", log_message.client_ip)
+        assert.same(uuid, log_message.request.headers["file-log-uuid"])
+        assert.is_number(log_message.request.size)
+        assert.is_number(log_message.response.size)
+        assert.same(nil, log_message.route)
+        assert.same(200, log_message.upstream_status)
+      end)
     end)
 
     it("logs to file #grpc", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       -- Making the request
       local ok, resp = proxy_client_grpc({
@@ -361,7 +414,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("logs to file #grpcs", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       -- Making the request
       local ok, resp = proxy_client_grpcs({
@@ -383,7 +436,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("reopens file on each request", function()
-      local uuid1 = utils.uuid()
+      local uuid1 = uuid()
 
       -- Making the request
       local res = assert(proxy_client:send({
@@ -391,7 +444,7 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid1,
-          ["Host"] = "file_logging.com"
+          ["Host"] = "file_logging.test"
         }
       }))
       assert.res_status(200, res)
@@ -402,24 +455,24 @@ for _, strategy in helpers.each_strategy() do
       os.remove(FILE_LOG_PATH)
 
       -- Making the next request
-      local uuid2 = utils.uuid()
+      local uuid2 = uuid()
       res = assert(proxy_client:send({
         method = "GET",
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid2,
-          ["Host"] = "file_logging.com"
+          ["Host"] = "file_logging.test"
         }
       }))
       assert.res_status(200, res)
 
-      local uuid3 = utils.uuid()
+      local uuid3 = uuid()
       res = assert(proxy_client:send({
         method = "GET",
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid3,
-          ["Host"] = "file_logging.com"
+          ["Host"] = "file_logging.test"
         }
       }))
       assert.res_status(200, res)
@@ -432,7 +485,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("does not create log file if directory doesn't exist", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       helpers.clean_logfile()
 
@@ -442,17 +495,17 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid,
-          ["Host"] = "file_logging2.com"
+          ["Host"] = "file_logging2.test"
         }
       }))
       assert.res_status(200, res)
 
-      assert.logfile().has.line("[file-log] failed to open the file: " ..
-      "No such file or directory while logging request", true, 30)
+      assert.logfile().has.line("\\[file-log\\] failed to open the file: " ..
+      "No such file or directory.*while logging request", false, 30)
     end)
 
     it("the given path is not a file but a directory", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       helpers.clean_logfile()
 
@@ -462,17 +515,17 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid,
-          ["Host"] = "file_logging3.com"
+          ["Host"] = "file_logging3.test"
         }
       }))
       assert.res_status(200, res)
 
-      assert.logfile().has.line("[file-log] failed to open the file: " ..
-      "Is a directory while logging request", true, 30)
+      assert.logfile().has.line("\\[file-log\\] failed to open the file: " ..
+      "Is a directory.*while logging request", false, 30)
     end)
 
     it("logs are lost if reopen = false and file doesn't exist", function()
-      local uuid1 = utils.uuid()
+      local uuid1 = uuid()
 
       os.remove(FILE_LOG_PATH)
 
@@ -482,7 +535,7 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid1,
-          ["Host"] = "file_logging4.com"
+          ["Host"] = "file_logging4.test"
         }
       }))
       assert.res_status(200, res)
@@ -491,7 +544,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("does not log if Kong has no write permissions to the file", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       helpers.clean_logfile()
 
@@ -501,17 +554,17 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid,
-          ["Host"] = "file_logging5.com"
+          ["Host"] = "file_logging5.test"
         }
       }))
       assert.res_status(200, res)
 
-      assert.logfile().has.line("[file-log] failed to open the file: " ..
-      "Permission denied while logging request", true, 30)
+      assert.logfile().has.line("\\[file-log\\] failed to open the file: " ..
+      "Permission denied.*while logging request", false, 30)
     end)
 
     it("the given path is a character device file", function()
-      local uuid = utils.random_string()
+      local uuid = random_string()
 
       helpers.clean_logfile()
 
@@ -521,7 +574,7 @@ for _, strategy in helpers.each_strategy() do
         path = "/status/200",
         headers = {
           ["file-log-uuid"] = uuid,
-          ["Host"] = "file_logging6.com"
+          ["Host"] = "file_logging6.test"
         }
       }))
       assert.res_status(200, res)

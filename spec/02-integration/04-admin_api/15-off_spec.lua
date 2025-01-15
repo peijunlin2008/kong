@@ -1,15 +1,17 @@
 local cjson    = require "cjson"
 local lyaml    = require "lyaml"
-local utils    = require "kong.tools.utils"
+local kong_table = require "kong.tools.table"
 local pl_utils = require "pl.utils"
 local helpers  = require "spec.helpers"
 local Errors   = require "kong.db.errors"
 local mocker   = require("spec.fixtures.mocker")
+local ssl_fixtures = require "spec.fixtures.ssl"
 local deepcompare  = require("pl.tablex").deepcompare
 local inspect = require "inspect"
 local nkeys = require "table.nkeys"
 local typedefs = require "kong.db.schema.typedefs"
 local schema = require "kong.db.schema"
+local uuid = require("kong.tools.uuid").uuid
 
 local WORKER_SYNC_TIMEOUT = 10
 local LMDB_MAP_SIZE = "10m"
@@ -57,7 +59,7 @@ describe("Admin API #off", function()
   end)
 
   lazy_teardown(function()
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
   before_each(function()
@@ -82,8 +84,8 @@ describe("Admin API #off", function()
           local res = client:post("/routes", {
             body = {
               protocols = { "http" },
-              hosts     = { "my.route.com" },
-              service   = { id = utils.uuid() },
+              hosts     = { "my.route.test" },
+              service   = { id = uuid() },
             },
             headers = { ["Content-Type"] = content_type }
           })
@@ -108,9 +110,9 @@ describe("Admin API #off", function()
             body    = {
               protocols = { "http" },
               methods   = { "GET", "POST", "PATCH" },
-              hosts     = { "foo.api.com", "bar.api.com" },
+              hosts     = { "foo.api.test", "bar.api.test" },
               paths     = { "/foo", "/bar" },
-              service   = { id =  utils.uuid() },
+              service   = { id =  uuid() },
             },
             headers = { ["Content-Type"] = content_type }
           })
@@ -159,7 +161,7 @@ describe("Admin API #off", function()
           path = "/routes",
           body = {
             paths = { "/" },
-            service = { id = utils.uuid() }
+            service = { id = uuid() }
           },
           headers = {
             ["Content-Type"] = "application/json"
@@ -187,10 +189,10 @@ describe("Admin API #off", function()
       for i = 1, #methods do
         local res = assert(client:send {
           method = methods[i],
-          path = "/routes/" .. utils.uuid(),
+          path = "/routes/" .. uuid(),
           body = {
             paths = { "/" },
-            service = { id = utils.uuid() }
+            service = { id = uuid() }
           },
           headers = {
             ["Content-Type"] = "application/json"
@@ -245,7 +247,7 @@ describe("Admin API #off", function()
               - username: "bobby_in_yaml_body"
           ]]),
           headers = {
-            ["Content-Type"] = "text/yaml"
+            ["Content-Type"] = "application/yaml"
           },
         })
 
@@ -452,8 +454,86 @@ describe("Admin API #off", function()
         assert.is_nil(entities.keyauth_credentials["487ab43c-b2c9-51ec-8da5-367586ea2b61"].ws_id)
         assert.is_nil(entities.plugins["0611a5a9-de73-5a2d-a4e6-6a38ad4c3cb2"].ws_id)
         assert.is_nil(entities.plugins["661199ff-aa1c-5498-982c-d57a4bd6e48b"].ws_id)
-        assert.is_nil(entities.routes["481a9539-f49c-51b6-b2e2-fe99ee68866c"].ws_id)
-        assert.is_nil(entities.services["0855b320-0dd2-547d-891d-601e9b38647f"].ws_id)
+
+        local services = entities.services["0855b320-0dd2-547d-891d-601e9b38647f"]
+        local routes = entities.routes["481a9539-f49c-51b6-b2e2-fe99ee68866c"]
+
+        assert.is_not_nil(services)
+        assert.is_not_nil(routes)
+        assert.is_nil(services.ws_id)
+        assert.is_nil(routes.ws_id)
+        assert.equals(routes.service.id, services.id)
+      end)
+
+      it("certificates should be auto-related with attach snis from /config response", function()
+        local res = assert(client:send {
+          method = "POST",
+          path = "/config",
+          body = {    
+            _format_version = "1.1",
+            certificates = {
+              {
+                cert = ssl_fixtures.cert,
+                id = "d83994d2-c24c-4315-b431-ee76b6611dcb",
+                key = ssl_fixtures.key,
+                snis = {
+                  {
+                    name = "foo.example",
+                    id = "1c6e83b7-c9ad-40ac-94e8-52f5ee7bde44",
+                  },
+                }
+              }
+            },
+          },
+          headers = {
+            ["Content-Type"] = "application/json"
+          }
+        })
+
+        local body = assert.response(res).has.status(201)
+        local entities = cjson.decode(body)
+        local certificates = entities.certificates["d83994d2-c24c-4315-b431-ee76b6611dcb"]
+        local snis = entities.snis["1c6e83b7-c9ad-40ac-94e8-52f5ee7bde44"]
+        assert.is_not_nil(certificates)
+        assert.is_not_nil(snis)
+        assert.equals(snis.certificate.id, certificates.id)
+      end)
+
+      it("certificates should be auto-related with separate snis from /config response", function()
+        local res = assert(client:send {
+          method = "POST",
+          path = "/config",
+          body = {
+            _format_version = "1.1",
+            certificates = {
+              {
+                cert = ssl_fixtures.cert,
+                id = "d83994d2-c24c-4315-b431-ee76b6611dcb",
+                key = ssl_fixtures.key,
+              },
+            },
+            snis = {
+              {
+                name = "foo.example",
+                id = "1c6e83b7-c9ad-40ac-94e8-52f5ee7bde44",
+                certificate = {
+                  id = "d83994d2-c24c-4315-b431-ee76b6611dcb"
+                }
+              },
+            },
+          },
+          headers = {
+            ["Content-Type"] = "application/json"
+          }
+        })
+
+        local body = assert.response(res).has.status(201)
+        local entities = cjson.decode(body)
+        local certificates = entities.certificates["d83994d2-c24c-4315-b431-ee76b6611dcb"]
+        local snis = entities.snis["1c6e83b7-c9ad-40ac-94e8-52f5ee7bde44"]
+        assert.is_not_nil(certificates)
+        assert.is_not_nil(snis)
+        assert.equals(snis.certificate.id, certificates.id)
       end)
 
       it("can reload upstreams (regression test)", function()
@@ -1752,7 +1832,7 @@ R6InCcH2Wh8wSeY5AuDXvu2tv9g/PW9wIJmPuKSHMA==
         entity_type = "certificate",
         errors = { {
             field = "cert",
-            message = "invalid certificate: x509.new: asn1/tasn_dec.c:349:error:0688010A:asn1 encoding routines::nested asn1 error",
+            message = "invalid certificate: x509.new: error:688010A:asn1 encoding routines:asn1_item_embed_d2i:nested asn1 error:asn1/tasn_dec.c:349:",
             type = "field"
           } }
       },
@@ -2243,6 +2323,162 @@ R6InCcH2Wh8wSeY5AuDXvu2tv9g/PW9wIJmPuKSHMA==
     }, post_config(input))
   end)
 
+  it("correctly handles nested entity errors", function()
+    local consumers = {
+      {
+        id = "cdac30ee-cd7e-465c-99b6-84f3e4e17015",
+        username = "consumer-01",
+        tags = { "consumer-01" },
+        basicauth_credentials = {
+          {
+            id = "089091f4-cb8b-48f5-8463-8319097be716",
+            username = "user-01", password = "pwd",
+            tags = { "consumer-01-credential-01" },
+          },
+          {
+            id = "b1443d61-ccd9-4359-b82a-f37515442295",
+            username = "user-11", password = "pwd",
+            tags = { "consumer-01-credential-02" },
+          },
+          {
+            id = "2603d010-edbe-4713-94ef-145e281cbf4c",
+            username = "user-02", password = "pwd",
+            tags = { "consumer-01-credential-03" },
+          },
+          {
+            id = "760cf441-613c-48a2-b377-36aebc9f9ed0",
+            -- unique violation!
+            username = "user-11", password = "pwd",
+            tags = { "consumer-01-credential-04" },
+          }
+        },
+      },
+      {
+        id = "c0c021f5-dae1-4031-bcf6-42e3c4d9ced9",
+        username = "consumer-02",
+        tags = { "consumer-02" },
+        basicauth_credentials = {
+          {
+            id = "d0cd1919-bb07-4c85-b407-f33feb74f6e2",
+            username = "user-99", password = "pwd",
+            tags = { "consumer-02-credential-01" },
+          }
+        },
+      },
+      {
+        id = "9acb0270-73aa-4968-b9e4-a4924e4aced5",
+        username = "consumer-03",
+        tags = { "consumer-03" },
+        basicauth_credentials = {
+          {
+            id = "7e8bcd10-cdcd-41f1-8c4d-9790d34aa67d",
+            -- unique violation!
+            username = "user-01", password = "pwd",
+            tags = { "consumer-03-credential-01" },
+          },
+          {
+            id = "7fe186bd-44e5-4b97-854d-85a24929889d",
+            username = "user-33", password = "pwd",
+            tags = { "consumer-03-credential-02" },
+          },
+          {
+            id = "6547c325-5332-41fc-a954-d4972926cdb5",
+            -- unique violation!
+            username = "user-02", password = "pwd",
+            tags = { "consumer-03-credential-03" },
+          },
+          {
+            id = "e091a955-9ee1-4403-8d0a-a7f1f8bafaca",
+            -- unique violation!
+            username = "user-33", password = "pwd",
+            tags = { "consumer-03-credential-04" },
+          }
+        },
+      }
+    }
+
+    local input = {
+      _format_version = "3.0",
+      consumers = consumers,
+    }
+
+    validate({
+      -- consumer 1 / credential 4
+      {
+        entity = {
+          consumer = { id = consumers[1].id },
+          id = consumers[1].basicauth_credentials[4].id,
+          tags = consumers[1].basicauth_credentials[4].tags,
+          password = "pwd",
+          username = "user-11"
+        },
+        entity_id = consumers[1].basicauth_credentials[4].id,
+        entity_tags = consumers[1].basicauth_credentials[4].tags,
+        entity_type = "basicauth_credential",
+        errors = { {
+          message = "uniqueness violation: 'basicauth_credentials' entity with username set to 'user-11' already declared",
+          type = "entity"
+        } }
+      },
+
+      -- consumer 3 / credential 1
+      {
+        entity = {
+          consumer = { id = consumers[3].id },
+          id = consumers[3].basicauth_credentials[1].id,
+          tags = consumers[3].basicauth_credentials[1].tags,
+          password = "pwd",
+          username = "user-01"
+        },
+        entity_id = consumers[3].basicauth_credentials[1].id,
+        entity_tags = consumers[3].basicauth_credentials[1].tags,
+        entity_type = "basicauth_credential",
+        errors = { {
+          message = "uniqueness violation: 'basicauth_credentials' entity with username set to 'user-01' already declared",
+          type = "entity"
+        } }
+      },
+
+      -- consumer 3 / credential 3
+      {
+        entity = {
+          consumer = { id = consumers[3].id },
+          id = consumers[3].basicauth_credentials[3].id,
+          tags = consumers[3].basicauth_credentials[3].tags,
+          password = "pwd",
+          username = "user-02"
+        },
+        entity_id = consumers[3].basicauth_credentials[3].id,
+        entity_tags = consumers[3].basicauth_credentials[3].tags,
+        entity_type = "basicauth_credential",
+        errors = { {
+          message = "uniqueness violation: 'basicauth_credentials' entity with username set to 'user-02' already declared",
+          type = "entity"
+        } }
+      },
+
+      -- consumer 3 / credential 4
+      {
+        entity = {
+          consumer = { id = consumers[3].id },
+          id = consumers[3].basicauth_credentials[4].id,
+          tags = consumers[3].basicauth_credentials[4].tags,
+          password = "pwd",
+          username = "user-33"
+        },
+        entity_id = consumers[3].basicauth_credentials[4].id,
+        entity_tags = consumers[3].basicauth_credentials[4].tags,
+        entity_type = "basicauth_credential",
+        errors = { {
+          message = "uniqueness violation: 'basicauth_credentials' entity with username set to 'user-33' already declared",
+          type = "entity"
+        } }
+      },
+
+
+    }, post_config(input))
+  end)
+
   it("preserves IDs from the input", function()
     local id = "0175e0e8-3de9-56b4-96f1-b12dcb4b6691"
     local service = {
@@ -2472,11 +2708,6 @@ R6InCcH2Wh8wSeY5AuDXvu2tv9g/PW9wIJmPuKSHMA==
         hide_client_headers = false,
         limit_by = "consumer",
         policy = "local",
-        redis_database = 0,
-        redis_port = 6379,
-        redis_ssl = false,
-        redis_ssl_verify = false,
-        redis_timeout = 2000,
         second = 2000,
       },
       enabled = true,
@@ -2551,11 +2782,6 @@ R6InCcH2Wh8wSeY5AuDXvu2tv9g/PW9wIJmPuKSHMA==
             hide_client_headers = false,
             limit_by = "consumer",
             policy = "local",
-            redis_database = 0,
-            redis_port = 6379,
-            redis_ssl = false,
-            redis_ssl_verify = false,
-            redis_timeout = 2000,
             second = 2000,
           },
           consumer = username,
@@ -2697,6 +2923,152 @@ R6InCcH2Wh8wSeY5AuDXvu2tv9g/PW9wIJmPuKSHMA==
       },
     }, flattened)
   end)
+  it("origin error do not loss when enable flatten_errors - (#12167)", function()
+    local input = {
+      _format_version = "3.0",
+      consumers = {
+        {
+          id = "a73dc9a7-93df-584d-97c0-7f41a1bbce3d",
+          username = "test-consumer-1",
+          tags =  { "consumer-1" },
+        },
+        {
+          id = "a73dc9a7-93df-584d-97c0-7f41a1bbce32",
+          username = "test-consumer-1",
+          tags =  { "consumer-2" },
+        },
+      },
+    }
+    local flattened = post_config(input)
+    validate({
+      {
+        entity_type = "consumer",
+        entity_id   = "a73dc9a7-93df-584d-97c0-7f41a1bbce32",
+        entity_name = nil,
+        entity_tags = { "consumer-2" },
+        entity      =  {
+          id = "a73dc9a7-93df-584d-97c0-7f41a1bbce32",
+          username = "test-consumer-1",
+          tags =  { "consumer-2" },
+        },
+        errors = {
+          {
+            type    = "entity",
+            message = "uniqueness violation: 'consumers' entity with username set to 'test-consumer-1' already declared",
+          }
+        },
+      },
+    }, flattened)
+  end)
+
+  it("correctly handles duplicate upstream target errors", function()
+    local target = {
+      target = "10.244.0.12:80",
+      weight = 1,
+      tags   = { "target-1" },
+    }
+    -- this has the same <addr>:<port> tuple as the first target, so it will
+    -- be assigned the same id
+    local dupe_target = kong_table.deep_copy(target)
+    dupe_target.tags = { "target-2" }
+
+    local input = {
+      _format_version = "3.0",
+      services = {
+        {
+          connect_timeout = 60000,
+          host = "httproute.default.httproute-testing.0",
+          id = "4e3cb785-a8d0-5866-aa05-117f7c64f24d",
+          name = "httproute.default.httproute-testing.0",
+          port = 8080,
+          protocol = "http",
+          read_timeout = 60000,
+          retries = 5,
+          routes = {
+            {
+              https_redirect_status_code = 426,
+              id = "073fc413-1c03-50b4-8f44-43367c13daba",
+              name = "httproute.default.httproute-testing.0.0",
+              path_handling = "v0",
+              paths = {
+                "~/httproute-testing$",
+                "/httproute-testing/",
+              },
+              preserve_host = true,
+              protocols = {
+                "http",
+                "https",
+              },
+              strip_path = true,
+              tags = {},
+            },
+          },
+          tags = {},
+          write_timeout = 60000,
+        },
+      },
+      upstreams = {
+        {
+          algorithm = "round-robin",
+          name = "httproute.default.httproute-testing.0",
+          id   = "e9792964-6797-482c-bfdf-08220a4f6832",
+          tags = {
+            "k8s-name:httproute-testing",
+            "k8s-namespace:default",
+            "k8s-kind:HTTPRoute",
+            "k8s-uid:f9792964-6797-482c-bfdf-08220a4f6839",
+            "k8s-group:gateway.networking.k8s.io",
+            "k8s-version:v1",
+          },
+          targets = {
+            {
+              target = "10.244.0.11:80",
+              weight = 1,
+            },
+            {
+              target = "10.244.0.12:80",
+              weight = 1,
+            },
+          },
+        },
+        {
+          algorithm = "round-robin",
+          name = "httproute.default.httproute-testing.1",
+          id   = "f9792964-6797-482c-bfdf-08220a4f6839",
+          tags = {
+            "k8s-name:httproute-testing",
+            "k8s-namespace:default",
+            "k8s-kind:HTTPRoute",
+            "k8s-uid:f9792964-6797-482c-bfdf-08220a4f6839",
+            "k8s-group:gateway.networking.k8s.io",
+            "k8s-version:v1",
+          },
+          targets = {
+            target,
+            dupe_target,
+          },
+        },
+      },
+    }
+
+    local flattened = post_config(input)
+    local entry = get_by_tag(dupe_target.tags[1], flattened)
+    assert.not_nil(entry, "no error for duplicate target in the response")
+
+    -- sanity
+    assert.same(dupe_target.tags, entry.entity_tags)
+
+    assert.is_table(entry.errors, "missing entity errors table")
+    assert.equals(1, #entry.errors, "expected 1 entity error")
+    assert.is_table(entry.errors[1], "entity error is not a table")
+
+    local e = entry.errors[1]
+    assert.equals("entity", e.type)
+
+    local exp = string.format("uniqueness violation: 'targets' entity with primary key set to '%s' already declared", entry.entity_id)
+
+    assert.equals(exp, e.message)
+  end)
 end)
 
 
@@ -2714,7 +3086,7 @@ describe("Admin API (concurrency tests) #off", function()
   end)
 
   after_each(function()
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
 
     if client then
       client:close()
@@ -2835,7 +3207,7 @@ describe("Admin API #off with Unique Foreign #unique", function()
   end)
 
   lazy_teardown(function()
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
   before_each(function()
@@ -2884,14 +3256,36 @@ describe("Admin API #off with Unique Foreign #unique", function()
     assert.equal(references.data[1].note, "note")
     assert.equal(references.data[1].unique_foreign.id, foreigns.data[1].id)
 
-    local declarative = require "kong.db.declarative"
-    local key = declarative.unique_field_key("unique_references", "", "unique_foreign",
-                                             foreigns.data[1].id, true)
+    -- get default workspace id in lmdb
+    local cmd = string.format(
+      [[resty --main-conf "lmdb_environment_path %s/%s;" spec/fixtures/dump_lmdb_key.lua %q]],
+      TEST_CONF.prefix, TEST_CONF.lmdb_environment_path,
+      require("kong.constants").DECLARATIVE_DEFAULT_WORKSPACE_KEY)
 
+    local handle = io.popen(cmd)
+    local ws_id = handle:read("*a")
+    handle:close()
+
+    -- get unique_field_key
+    local declarative = require "kong.db.declarative"
+    local key = declarative.unique_field_key("unique_references", ws_id, "unique_foreign",
+                                             foreigns.data[1].id, true)
 
     local cmd = string.format(
       [[resty --main-conf "lmdb_environment_path %s/%s;" spec/fixtures/dump_lmdb_key.lua %q]],
       TEST_CONF.prefix, TEST_CONF.lmdb_environment_path, key)
+
+    local handle = io.popen(cmd)
+    local unique_field_key = handle:read("*a")
+    handle:close()
+
+    assert.is_string(unique_field_key, "non-string result from unique lookup")
+    assert.not_equals("", unique_field_key, "empty result from unique lookup")
+
+    -- get the entity value
+    local cmd = string.format(
+      [[resty --main-conf "lmdb_environment_path %s/%s;" spec/fixtures/dump_lmdb_key.lua %q]],
+      TEST_CONF.prefix, TEST_CONF.lmdb_environment_path, unique_field_key)
 
     local handle = io.popen(cmd)
     local result = handle:read("*a")
@@ -2900,11 +3294,15 @@ describe("Admin API #off with Unique Foreign #unique", function()
     assert.not_equals("", result, "empty result from unique lookup")
 
     local cached_reference = assert(require("kong.db.declarative.marshaller").unmarshall(result))
+
+    -- NOTE: we have changed internl LDMB storage format, and dao does not has this field(ws_id)
+    cached_reference.ws_id = nil
+
     assert.same(cached_reference, references.data[1])
 
     local cache = {
       get = function(_, k)
-        if k ~= "unique_references||unique_foreign:" .. foreigns.data[1].id then
+        if k ~= "unique_references|" ..ws_id .. "|unique_foreign:" .. foreigns.data[1].id then
           return nil
         end
 
@@ -2978,7 +3376,7 @@ describe("Admin API #off with cache key vs endpoint key #unique", function()
   end)
 
   lazy_teardown(function()
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
   before_each(function()
@@ -3046,7 +3444,7 @@ describe("Admin API #off worker_consistency=eventual", function()
   end)
 
   lazy_teardown(function()
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
   before_each(function()
@@ -3074,7 +3472,7 @@ describe("Admin API #off worker_consistency=eventual", function()
         - name: prometheus
       ]]),
       headers = {
-        ["Content-Type"] = "text/yaml"
+        ["Content-Type"] = "application/yaml"
       },
     })
     assert.response(res).has.status(201)
@@ -3104,7 +3502,7 @@ describe("Admin API #off worker_consistency=eventual", function()
         - name: prometheus
       ]]),
       headers = {
-        ["Content-Type"] = "text/yaml"
+        ["Content-Type"] = "application/yaml"
       },
     })
     assert.response(res).has.status(201)

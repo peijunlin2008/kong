@@ -7,14 +7,23 @@ local pl_path = require "pl.path"
 local pl_dir = require "pl.dir"
 local pl_file = require "pl.file"
 local pl_utils = require "pl.utils"
-local os = require "os"
+local shell = require "resty.shell"
 
 local print = print
 local error = error
 local assert = assert
 local ngx = ngx
 local io = io
-local shallow_copy = require "kong.tools.utils".shallow_copy
+
+local shallow_copy
+do
+  local clone = require "table.clone"
+
+  shallow_copy = function(orig)
+    assert(type(orig) == "table")
+    return clone(orig)
+  end
+end
 
 local template = assert(pl_template.compile(template_str))
 local render_env = {ipairs = ipairs, pairs = pairs, error = error, }
@@ -60,7 +69,7 @@ function http_mock:stop(no_clean, signal, timeout)
   pid_file:close()
 
   local kill_nginx_cmd = "kill -s " .. signal .. " " .. pid
-  if not os.execute(kill_nginx_cmd) then
+  if not shell.run(kill_nginx_cmd, nil, 0) then
     error("failed to kill nginx at " .. self.prefix, 2)
   end
 

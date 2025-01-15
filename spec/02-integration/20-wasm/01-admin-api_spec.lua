@@ -1,8 +1,9 @@
 local helpers = require "spec.helpers"
-local utils = require "kong.tools.utils"
+local uuid = require "kong.tools.uuid"
 
 local fmt = string.format
 
+local FILTER_PATH = assert(helpers.test_conf.wasm_filters_path)
 
 local function json(body)
   return {
@@ -22,8 +23,12 @@ describe("wasm admin API [#" .. strategy .. "]", function()
 
   lazy_setup(function()
     require("kong.runloop.wasm").enable({
-      { name = "tests" },
-      { name = "response_transformer" },
+      { name = "tests",
+        path = FILTER_PATH .. "/tests.wasm",
+      },
+      { name = "response_transformer",
+        path = FILTER_PATH .. "/response_transformer.wasm",
+      },
     })
 
     bp, db = helpers.get_db_utils(strategy, {
@@ -56,7 +61,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
 
   lazy_teardown(function()
     if admin then admin:close() end
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
 
@@ -94,7 +99,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
         local body = assert.response(res).has.jsonbody()
 
         assert.is_string(body.id)
-        assert.truthy(utils.is_valid_uuid(body.id))
+        assert.truthy(uuid.is_valid_uuid(body.id))
 
         assert.equals(1, #body.filters)
         assert.equals("tests", body.filters[1].name)
@@ -167,7 +172,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
 
       it("returns 404 if not found", function()
         assert.response(
-          admin:get("/filter-chains/" .. utils.uuid())
+          admin:get("/filter-chains/" .. uuid.uuid())
         ).has.status(404)
       end)
     end)
@@ -229,7 +234,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
 
     end)
 
-    unsupported("POST", "/filter-chains/" .. utils.uuid())
+    unsupported("POST", "/filter-chains/" .. uuid.uuid())
   end)
 
   end -- each { "id", "name" }
@@ -265,7 +270,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
         local body = assert.response(res).has.jsonbody()
 
         assert.is_string(body.id)
-        assert.truthy(utils.is_valid_uuid(body.id))
+        assert.truthy(uuid.is_valid_uuid(body.id))
 
         assert.equals(1, #body.filters)
         assert.equals("tests", body.filters[1].name)
@@ -335,7 +340,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
 
       it("returns 404 if not found", function()
         assert.response(
-          admin:get(path .. utils.uuid())
+          admin:get(path .. uuid.uuid())
         ).has.status(404)
       end)
     end)
@@ -422,7 +427,7 @@ describe("wasm admin API [#" .. strategy .. "]", function()
       fcs = {
         assert(bp.filter_chains:insert({
           filters = {
-            { name = "tests", config = ngx.null, enabled = true },
+            { name = "tests", config = nil, enabled = true },
             { name = "response_transformer", config = "{}", enabled = false },
           },
           service = { id = service.id },
@@ -563,7 +568,7 @@ describe("wasm admin API - wasm = off [#" .. strategy .. "]", function()
 
   lazy_teardown(function()
     if admin then admin:close() end
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
   describe("/filter-chains", function()
@@ -661,7 +666,7 @@ describe("wasm admin API - wasm = off [#" .. strategy .. "]", function()
 
     it("PATCH returns 400", function()
       assert.response(
-        admin:patch(path .. "/" .. utils.uuid()), json({
+        admin:patch(path .. "/" .. uuid.uuid()), json({
           filters = { { name = "tests" } },
           service = { id = service.id },
         })
@@ -670,7 +675,7 @@ describe("wasm admin API - wasm = off [#" .. strategy .. "]", function()
 
     it("PUT returns 400", function()
       assert.response(
-        admin:put(path .. "/" .. utils.uuid()), json({
+        admin:put(path .. "/" .. uuid.uuid()), json({
           filters = { { name = "tests" } },
           service = { id = service.id },
         })
@@ -679,7 +684,7 @@ describe("wasm admin API - wasm = off [#" .. strategy .. "]", function()
 
     it("DELETE returns 400", function()
       assert.response(
-        admin:delete(path .. "/" .. utils.uuid())
+        admin:delete(path .. "/" .. uuid.uuid())
       ).has.status(400)
     end)
 

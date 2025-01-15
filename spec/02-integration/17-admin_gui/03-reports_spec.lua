@@ -1,6 +1,7 @@
 local cjson = require "cjson"
 local lfs = require "lfs"
 local pl_path = require "pl.path"
+local shell = require "resty.shell"
 
 local helpers = require "spec.helpers"
 local constants = require "kong.constants"
@@ -26,7 +27,7 @@ describe("anonymous reports for kong manager", function ()
   local prepare_gui_dir = function ()
     local err, gui_dir_path
     gui_dir_path = pl_path.join(helpers.test_conf.prefix, "gui")
-    os.execute("rm -rf " .. gui_dir_path)
+    shell.run("rm -rf " .. gui_dir_path, nil, 0)
     err = select(2, lfs.mkdir(gui_dir_path))
     assert.is_nil(err)
     return gui_dir_path
@@ -68,6 +69,7 @@ describe("anonymous reports for kong manager", function ()
         anonymous_reports = true,
         plugins = "bundled,reports-api",
         dns_hostsfile = dns_hostsfile,
+        resolver_hosts_file = dns_hostsfile,
       }))
 
       finally(function()
@@ -83,6 +85,7 @@ describe("anonymous reports for kong manager", function ()
         anonymous_reports = true,
         plugins = "bundled,reports-api",
         dns_hostsfile = dns_hostsfile,
+        resolver_hosts_file = dns_hostsfile,
       }))
 
       finally(function()
@@ -100,6 +103,7 @@ describe("anonymous reports for kong manager", function ()
         anonymous_reports = true,
         plugins = "bundled,reports-api",
         dns_hostsfile = dns_hostsfile,
+        resolver_hosts_file = dns_hostsfile,
       }))
 
       local gui_dir_path = prepare_gui_dir()

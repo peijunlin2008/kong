@@ -8,7 +8,7 @@ server {
     ssl_certificate     $(ssl_cert[i]);
     ssl_certificate_key $(ssl_cert_key[i]);
 > end
-    ssl_protocols TLSv1.1 TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     content_by_lua_block {
         local sock = assert(ngx.req.socket())
@@ -33,7 +33,7 @@ include '*.stream_mock';
 
 > if cluster_ssl_tunnel then
 server {
-    listen unix:${{PREFIX}}/cluster_proxy_ssl_terminator.sock;
+    listen unix:${{SOCKET_PATH}}/${{CLUSTER_PROXY_SSL_TERMINATOR_SOCK}};
 
     proxy_pass ${{cluster_ssl_tunnel}};
     proxy_ssl on;

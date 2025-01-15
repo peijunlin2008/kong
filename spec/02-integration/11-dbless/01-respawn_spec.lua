@@ -57,7 +57,7 @@ describe("worker respawn", function()
   end)
 
   lazy_teardown(function()
-    helpers.stop_kong(nil, true)
+    helpers.stop_kong()
   end)
 
   before_each(function()
@@ -194,7 +194,7 @@ describe("worker respawn", function()
       path = "/config",
       body = {
         config = string.format([[
-        _format_version: "1.1"
+        _format_version: "3.0"
         services:
         - name: my-service
           host: %s

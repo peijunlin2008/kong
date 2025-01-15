@@ -70,27 +70,35 @@ local domains_matcher
 -- expose it for use in api.lua
 ACMEHandler.build_domain_matcher = build_domain_matcher
 
-function ACMEHandler:init_worker()
-  local worker_id = ngx.worker.id()
-  kong.log.info("acme renew timer started on worker ", worker_id)
-  ngx.timer.every(86400, client.renew_certificate)
 
-  -- handle cache updating of domains_matcher
-  kong.worker_events.register(function(data)
-    if data.entity.name ~= "acme" then
-      return
-    end
-
-    local operation = data.operation
-
-    if operation == "create" or operation == "update" then
-      local conf = data.entity.config
-      domains_matcher = build_domain_matcher(conf.domains)
-    end
+local CONFIG
 
 
-  end, "crud", "plugins")
+local function renew(premature)
+  if premature or not CONFIG then
+    return
+  end
+  client.renew_certificate(CONFIG)
 end
+
+
+ACMEHandler.renew = renew
+
+
+function ACMEHandler:init_worker()
+  local worker_id = ngx.worker.id() or -1
+  kong.log.info("acme renew timer started on worker ", worker_id)
+  ngx.timer.every(86400, renew)
+end
+
+
+function ACMEHandler:configure(configs)
+  CONFIG = configs and configs[1] or nil
+  if CONFIG then
+    domains_matcher = build_domain_matcher(CONFIG.domains)
+  end
+end
+
 
 local function check_domains(conf, host)
   if not conf.enable_ipv4_common_name and string_find(host, "^(%d+)%.(%d+)%.(%d+)%.(%d+)$") then

@@ -15,7 +15,7 @@ describe("admin_gui template", function()
     local conf = {
       prefix = mock_prefix,
       admin_gui_url = "http://0.0.0.0:8002",
-      admin_gui_api_url = "https://admin-reference.kong-cloud.com",
+      admin_gui_api_url = "https://admin-reference.kong-cloud.test",
       admin_gui_path = '/manager',
       admin_gui_listeners = {
         {
@@ -57,18 +57,17 @@ describe("admin_gui template", function()
 
     setup(function()
       prefix_handler.prepare_prefixed_interface_dir("/usr/local/kong", "gui", conf)
+      os.execute("mkdir -p " .. mock_prefix)
       assert(pl_path.isdir(mock_prefix))
     end)
 
     it("should generates the appropriate kconfig", function()
       local kconfig_content = admin_gui.generate_kconfig(conf)
 
-      assert.matches("'ADMIN_GUI_URL': 'http://0.0.0.0:8002'", kconfig_content, nil, true)
       assert.matches("'ADMIN_GUI_PATH': '/manager'", kconfig_content, nil, true)
-      assert.matches("'ADMIN_API_URL': 'https://admin-reference.kong-cloud.com'", kconfig_content, nil, true)
+      assert.matches("'ADMIN_API_URL': 'https://admin-reference.kong-cloud.test'", kconfig_content, nil, true)
       assert.matches("'ADMIN_API_PORT': '8001'", kconfig_content, nil, true)
       assert.matches("'ADMIN_API_SSL_PORT': '8444'", kconfig_content, nil, true)
-      assert.matches("'KONG_EDITION': 'community'", kconfig_content, nil, true)
     end)
 
     it("should regenerates the appropriate kconfig from another call", function()
@@ -83,12 +82,10 @@ describe("admin_gui template", function()
       local new_content = admin_gui.generate_kconfig(new_conf)
 
       -- test configuration values against template
-      assert.matches("'ADMIN_GUI_URL': 'http://admin-test.example.com'", new_content, nil, true)
       assert.matches("'ADMIN_GUI_PATH': '/manager'", new_content, nil, true)
       assert.matches("'ADMIN_API_URL': 'http://localhost:8001'", new_content, nil, true)
       assert.matches("'ADMIN_API_PORT': '8001'", new_content, nil, true)
       assert.matches("'ADMIN_API_SSL_PORT': '8444'", new_content, nil, true)
-      assert.matches("'KONG_EDITION': 'community'", new_content, nil, true)
     end)
   end)
 
@@ -140,18 +137,17 @@ describe("admin_gui template", function()
 
     setup(function()
       prefix_handler.prepare_prefixed_interface_dir("/usr/local/kong", "gui", conf)
+      os.execute("mkdir -p " .. mock_prefix)
       assert(pl_path.isdir(mock_prefix))
     end)
 
     it("should generates the appropriate kconfig", function()
       local kconfig_content = admin_gui.generate_kconfig(conf)
 
-      assert.matches("'ADMIN_GUI_URL': 'http://0.0.0.0:8002'", kconfig_content, nil, true)
       assert.matches("'ADMIN_API_URL': '0.0.0.0:8001'", kconfig_content, nil, true)
       assert.matches("'ADMIN_API_PORT': '8001'", kconfig_content, nil, true)
       assert.matches("'ADMIN_API_SSL_PORT': '8444'", kconfig_content, nil, true)
       assert.matches("'ANONYMOUS_REPORTS': 'false'", kconfig_content, nil, true)
-      assert.matches("'KONG_EDITION': 'community'", kconfig_content, nil, true)
     end)
 
     it("should regenerates the appropriate kconfig from another call", function()
@@ -165,12 +161,10 @@ describe("admin_gui template", function()
       local new_content = admin_gui.generate_kconfig(new_conf)
 
       -- test configuration values against template
-      assert.matches("'ADMIN_GUI_URL': 'http://admin-test.example.com'", new_content, nil, true)
       assert.matches("'ADMIN_API_URL': '0.0.0.0:8001'", new_content, nil, true)
       assert.matches("'ADMIN_API_PORT': '8001'", new_content, nil, true)
       assert.matches("'ADMIN_API_SSL_PORT': '8444'", new_content, nil, true)
       assert.matches("'ANONYMOUS_REPORTS': 'true'", new_content, nil, true)
-      assert.matches("'KONG_EDITION': 'community'", new_content, nil, true)
     end)
   end)
 
@@ -187,7 +181,7 @@ describe("admin_gui template", function()
       conf.prefix = mock_prefix
 
       if not pl_path.exists(usr_interface_path) then
-        assert(pl_path.mkdir(usr_interface_path))
+        os.execute("mkdir -p " .. usr_interface_path)
       end
     end)
 

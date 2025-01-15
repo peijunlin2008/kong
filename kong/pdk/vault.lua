@@ -16,21 +16,21 @@ local lrucache = require "resty.lrucache"
 local isempty = require "table.isempty"
 local buffer = require "string.buffer"
 local clone = require "table.clone"
-local utils = require "kong.tools.utils"
 local cjson = require("cjson.safe").new()
 
 
-local yield = utils.yield
-local get_updated_now_ms = utils.get_updated_now_ms
+local yield = require("kong.tools.yield").yield
+local get_updated_now_ms = require("kong.tools.time").get_updated_now_ms
+local replace_dashes = require("kong.tools.string").replace_dashes
 
 
 local ngx = ngx
 local get_phase = ngx.get_phase
 local max = math.max
+local min = math.min
 local fmt = string.format
 local sub = string.sub
 local byte = string.byte
-local gsub = string.gsub
 local type = type
 local sort = table.sort
 local pcall = pcall
@@ -58,6 +58,14 @@ local BRACE_START = byte("{")
 local BRACE_END = byte("}")
 local COLON = byte(":")
 local SLASH = byte("/")
+local BYT_V = byte("v")
+local BYT_A = byte("a")
+local BYT_U = byte("u")
+local BYT_L = byte("l")
+local BYT_T = byte("t")
+
+
+local VAULT_QUERY_OPTS = { workspace = ngx.null }
 
 
 ---
@@ -69,13 +77,17 @@ local SLASH = byte("/")
 -- @tparam string reference reference to check
 -- @treturn boolean `true` is the passed in reference looks like a reference, otherwise `false`
 local function is_reference(reference)
-  return type(reference)      == "string"
-     and byte(reference, 1)   == BRACE_START
-     and byte(reference, -1)  == BRACE_END
-     and byte(reference, 7)   == COLON
-     and byte(reference, 8)   == SLASH
-     and byte(reference, 9)   == SLASH
-     and sub(reference, 2, 6) == "vault"
+  return type(reference)     == "string"
+     and byte(reference, 1)  == BRACE_START
+     and byte(reference, 2)  == BYT_V
+     and byte(reference, 3)  == BYT_A
+     and byte(reference, 4)  == BYT_U
+     and byte(reference, 5)  == BYT_L
+     and byte(reference, 6)  == BYT_T
+     and byte(reference, 7)  == COLON
+     and byte(reference, 8)  == SLASH
+     and byte(reference, 9)  == SLASH
+     and byte(reference, -1) == BRACE_END
 end
 
 
@@ -143,18 +155,15 @@ local function parse_reference(reference)
   local key
   local parts = parse_path(resource)
   local count = #parts
-  if count == 1 then
+  if count == 0 then
+    return nil, fmt("reference url has invalid path [%s]", reference)
+  elseif count == 1 then
     resource = unescape_uri(parts[1])
-
+  elseif parts.is_directory then
+    resource = unescape_uri(concat(parts, "/", 1, count))
   else
     resource = unescape_uri(concat(parts, "/", 1, count - 1))
-    if parts[count] ~= "" then
-      key = unescape_uri(parts[count])
-    end
-  end
-
-  if resource == "" then
-    return nil, fmt("reference url has invalid path [%s]", reference)
+    key = unescape_uri(parts[count])
   end
 
   local config
@@ -183,7 +192,7 @@ end
 local function new(self)
   -- Don't put this onto the top level of the file unless you're prepared for a surprise
   local Schema = require "kong.db.schema"
-  
+
   local ROTATION_MUTEX_OPTS = {
     name = "vault-rotation",
     exptime = ROTATION_INTERVAL * 1.5, -- just in case the lock is not properly released
@@ -196,6 +205,8 @@ local function new(self)
   local SECRETS_CACHE = ngx.shared.kong_secrets
   local SECRETS_CACHE_MIN_TTL = ROTATION_INTERVAL * 2
 
+  local INIT_SECRETS = {}
+  local INIT_WORKER_SECRETS = {}
   local STRATEGIES = {}
   local SCHEMAS = {}
   local CONFIGS = {}
@@ -539,7 +550,7 @@ local function new(self)
       base_config = {}
       if self and self.configuration then
         local configuration = self.configuration
-        local env_name = gsub(name, "-", "_")
+        local env_name = replace_dashes(name)
         local _, err, schema = get_vault_strategy_and_schema(name)
         if not schema then
           return nil, err
@@ -553,7 +564,7 @@ local function new(self)
           -- then you would configure it with KONG_VAULT_MY_VAULT_<setting>
           -- or in kong.conf, where it would be called
           -- "vault_my_vault_<setting>".
-          local n = lower(fmt("vault_%s_%s", env_name, gsub(k, "-", "_")))
+          local n = lower(fmt("vault_%s_%s", env_name, replace_dashes(k)))
           local v = configuration[n]
           v = arguments.infer_value(v, f)
           -- TODO: should we be more visible with validation errors?
@@ -607,15 +618,15 @@ local function new(self)
 
     if cache then
       local vault_cache_key = vaults:cache_key(prefix)
-      vault, err = cache:get(vault_cache_key, nil, vaults.select_by_prefix, vaults, prefix)
+      vault, err = cache:get(vault_cache_key, nil, vaults.select_by_prefix, vaults, prefix, VAULT_QUERY_OPTS)
 
     else
-      vault, err = vaults:select_by_prefix(prefix)
+      vault, err = vaults:select_by_prefix(prefix, VAULT_QUERY_OPTS)
     end
 
     if not vault then
       if err then
-        self.log.notice("could not find vault (", prefix, "): ", err)
+        return nil, fmt("could not find vault (%s): %s", prefix, err)
       end
 
       return nil, fmt("could not find vault (%s)", prefix)
@@ -682,7 +693,7 @@ local function new(self)
       return nil, err
     end
 
-    if kong and kong.licensing and kong.licensing:license_type() == "free" and strategy.license_required then
+    if strategy.license_required and self.licensing and self.licensing:license_type() == "free" then
       return nil, "vault " .. name .. " requires a license to be used"
     end
 
@@ -738,6 +749,61 @@ local function new(self)
     return value, nil, ttl
   end
 
+  ---
+  -- Function `get_cache_value_and_ttl` returns a value for caching and its ttl
+  --
+  -- @local
+  -- @function get_cache_value_and_ttl
+  -- @tparam string value the vault returned value for a reference
+  -- @tparam table config the configuration settings to be used
+  -- @tparam[opt] number ttl the possible vault returned ttl
+  -- @treturn string value to be stored in shared dictionary
+  -- @treturn number shared dictionary ttl
+  -- @treturn number lru ttl
+  -- @usage local cache_value, shdict_ttl, lru_ttl = get_cache_value_and_ttl(value, config, ttl)
+  local function get_cache_value_and_ttl(value, config, ttl)
+    local cache_value, shdict_ttl, lru_ttl
+    if value then
+      cache_value = value
+
+      -- adjust ttl to the minimum and maximum values configured
+      ttl = adjust_ttl(ttl, config)
+
+      if config.resurrect_ttl then
+        lru_ttl = min(ttl + config.resurrect_ttl, DAO_MAX_TTL)
+        shdict_ttl = max(lru_ttl, SECRETS_CACHE_MIN_TTL)
+
+      else
+        lru_ttl = ttl
+        -- shared dict ttl controls when the secret
+        -- value will be refreshed by `rotate_secrets`
+        -- timer. If a secret whose remaining time is less
+        -- than `config.resurrect_ttl`(or DAO_MAX_TTL
+        -- if not configured), it could possibly
+        -- be updated in every cycle of `rotate_secrets`.
+        --
+        -- The shdict_ttl should be
+        -- `config.ttl` + `config.resurrect_ttl`
+        -- to make sure the secret value persists for
+        -- at least `config.ttl` seconds.
+        -- When `config.resurrect_ttl` is not set and
+        -- `config.ttl` is not set, shdict_ttl will be
+        -- DAO_MAX_TTL * 2; when `config.resurrect_ttl`
+        -- is not set but `config.ttl` is set, shdict_ttl
+        -- will be ttl + DAO_MAX_TTL
+        shdict_ttl = ttl + DAO_MAX_TTL
+      end
+
+    else
+      cache_value = NEGATIVELY_CACHED_VALUE
+
+      -- negatively cached values will be rotated on each rotation interval
+      shdict_ttl = max(config.neg_ttl or 0, SECRETS_CACHE_MIN_TTL)
+    end
+
+    return cache_value, shdict_ttl, lru_ttl
+  end
+
 
   ---
   -- Function `get_from_vault` retrieves a value from the vault using the provided strategy.
@@ -756,35 +822,33 @@ local function new(self)
   -- @tparam table parsed_reference the parsed reference
   -- @treturn string|nil the retrieved value from the vault, of `nil`
   -- @treturn string|nil a string describing an error if there was one
+  -- @treturn boolean|nil whether to resurrect value in case vault errors or doesn't return value
   -- @usage local value, err = get_from_vault(reference, strategy, config, cache_key, parsed_reference)
-  local function get_from_vault(reference, strategy, config, cache_key, parsed_reference)
+  local function get_from_vault(reference, strategy, config, cache_key, parsed_reference, resurrect)
     local value, err, ttl = invoke_strategy(strategy, config, parsed_reference)
-    local cache_value, shdict_ttl
-    if value then
-      -- adjust ttl to the minimum and maximum values configured
-      ttl = adjust_ttl(ttl, config)
-      shdict_ttl = max(ttl + (config.resurrect_ttl or DAO_MAX_TTL), SECRETS_CACHE_MIN_TTL)
-      cache_value = value
+    if resurrect and value == nil then
+      local resurrected_value = SECRETS_CACHE:get(cache_key)
+      if resurrected_value then
+        return resurrected_value
 
-    else
-      -- negatively cached values will be rotated on each rotation interval
-      shdict_ttl = max(config.neg_ttl or 0, SECRETS_CACHE_MIN_TTL)
-      cache_value = NEGATIVELY_CACHED_VALUE
+      else
+        return nil, fmt("could not get value from external vault (%s)", err)
+      end
     end
 
+    local cache_value, shdict_ttl, lru_ttl = get_cache_value_and_ttl(value, config, ttl)
     local ok, cache_err = SECRETS_CACHE:safe_set(cache_key, cache_value, shdict_ttl)
     if not ok then
       return nil, cache_err
     end
 
-    if not value then
-      LRU:delete(reference)
+    if cache_value == NEGATIVELY_CACHED_VALUE then
       return nil, fmt("could not get value from external vault (%s)", err)
     end
 
-    LRU:set(reference, value, ttl)
+    LRU:set(reference, cache_value, lru_ttl)
 
-    return value
+    return cache_value
   end
 
 
@@ -794,10 +858,15 @@ local function new(self)
   -- If the value is not found in these caches and `cache_only` is not `truthy`,
   -- it attempts to retrieve the value from a vault.
   --
+  -- On init worker phase the resolving of the secrets is postponed to a timer,
+  -- and in this case the function returns `""` when it fails to find a value
+  -- in a cache. This is because of current limitations in platform that disallows
+  -- using cosockets/coroutines in that phase.
+  --
   -- @local
   -- @function get
   -- @tparam string reference the reference key to lookup
-  -- @tparam boolean cache_only optional boolean flag (if set to `true`,
+  -- @tparam[opt] boolean cache_only optional boolean flag (if set to `true`,
   -- the function will not attempt to retrieve the value from the vault)
   -- @treturn string the retrieved value corresponding to the provided reference,
   -- or `nil` (when found negatively cached, or in case of an error)
@@ -806,8 +875,7 @@ local function new(self)
   -- @usage
   -- local value, err = get(reference, cache_only)
   local function get(reference, cache_only)
-    -- the LRU stale value is ignored as the resurrection logic
-    -- is deferred to the shared dictionary
+    -- the LRU stale value is ignored
     local value = LRU:get(reference)
     if value then
       return value
@@ -815,19 +883,40 @@ local function new(self)
 
     local strategy, err, config, cache_key, parsed_reference = get_strategy(reference)
     if not strategy then
+      -- this can fail on init as the lmdb cannot be accessed and secondly,
+      -- because the data is not yet inserted into LMDB when using KONG_DECLARATIVE_CONFIG.
+      if get_phase() == "init" then
+        if not INIT_SECRETS[cache_key] then
+          INIT_SECRETS[reference] = true
+          INIT_SECRETS[#INIT_SECRETS + 1] = reference
+        end
+
+        return ""
+      end
+
       return nil, err
     end
 
     value = SECRETS_CACHE:get(cache_key)
-    if cache_only and not value then
-      return nil, "could not find cached value"
-    end
-
     if value == NEGATIVELY_CACHED_VALUE then
       return nil
     end
 
     if not value then
+      if cache_only then
+        return nil, "could not find cached value"
+      end
+
+      -- this can fail on init worker as there is no cosockets / coroutines available
+      if  get_phase() == "init_worker" then
+        if not INIT_WORKER_SECRETS[cache_key] then
+          INIT_WORKER_SECRETS[cache_key] = true
+          INIT_WORKER_SECRETS[#INIT_WORKER_SECRETS + 1] = cache_key
+        end
+
+        return ""
+      end
+
       return get_from_vault(reference, strategy, config, cache_key, parsed_reference)
     end
 
@@ -857,11 +946,51 @@ local function new(self)
   -- update_from_cache("{vault://env/example}", record, "field" })
   local function update_from_cache(reference, record, field)
     local value, err = get(reference, true)
-    if not value then
+    if err then
       self.log.warn("error updating secret reference ", reference, ": ", err)
     end
 
     record[field] = value or ""
+  end
+
+
+  ---
+  -- Recurse over config and calls the callback for each found reference.
+  --
+  -- @local
+  -- @function recurse_config_refs
+  -- @tparam table config config table to recurse.
+  -- @tparam function callback callback to call on each reference.
+  -- @treturn table config that might have been updated, depending on callback.
+  local function recurse_config_refs(config, callback)
+    -- silently ignores other than tables
+    if type(config) ~= "table" then
+      return config
+    end
+
+    for key, value in pairs(config) do
+      if key ~= "$refs" and type(value) == "table" then
+        recurse_config_refs(value, callback)
+      end
+    end
+
+    local references = config["$refs"]
+    if type(references) ~= "table" or isempty(references) then
+      return config
+    end
+
+    for name, reference in pairs(references) do
+      if type(reference) == "string" then -- a string reference
+        callback(reference, config, name)
+
+      elseif type(reference) == "table" then -- array, set or map of references
+        for key, ref in pairs(reference) do
+          callback(ref, config[name], key)
+        end
+      end
+    end
+
+    return config
   end
 
 
@@ -886,34 +1015,7 @@ local function new(self)
   -- OR
   -- update(config)
   local function update(config)
-    -- silently ignores other than tables
-    if type(config) ~= "table" then
-      return config
-    end
-
-    for key, value in pairs(config) do
-      if key ~= "$refs" and type(value) == "table" then
-        update(value)
-      end
-    end
-
-    local references = config["$refs"]
-    if type(references) ~= "table" or isempty(references) then
-      return config
-    end
-
-    for name, reference in pairs(references) do
-      if type(reference) == "string" then -- a string reference
-        update_from_cache(reference, config, name)
-
-      elseif type(reference) == "table" then -- array, set or map of references
-        for key, ref in pairs(reference) do
-          update_from_cache(ref, config[name], key)
-        end
-      end
-    end
-
-    return config
+    return recurse_config_refs(config, update_from_cache)
   end
 
 
@@ -1105,7 +1207,7 @@ local function new(self)
       -- We cannot retry, so let's just call the callback and return
       return callback(options)
     end
-    
+
     local name = "vault.try:" .. calculate_hash(concat(references, "."))
     local old_updated_at = RETRY_LRU:get(name) or 0
 
@@ -1176,18 +1278,25 @@ local function new(self)
     -- If the TTL is still greater than the resurrect time
     -- we don't have to rotate the secret, except it if it
     -- negatively cached.
+    local resurrect
     local ttl = SECRETS_CACHE:ttl(new_cache_key)
     if ttl and SECRETS_CACHE:get(new_cache_key) ~= NEGATIVELY_CACHED_VALUE then
       local resurrect_ttl = max(config.resurrect_ttl or DAO_MAX_TTL, SECRETS_CACHE_MIN_TTL)
+      -- the secret is still within ttl, no need to refresh
       if ttl > resurrect_ttl then
         return true
       end
+
+      -- the secret is still within resurrect ttl time, so when we try to refresh the secret
+      -- we do not forciblly override it with a negative value, so that the cached value
+      -- can be resurrected
+      resurrect = ttl > SECRETS_CACHE_MIN_TTL
     end
 
     strategy = caching_strategy(strategy, config_hash)
 
-    -- we should refresh the secret at this point
-    local ok, err = get_from_vault(reference, strategy, config, new_cache_key, parsed_reference)
+    -- try to refresh the secret, according to the remaining time the cached value may or may not be refreshed.
+    local ok, err = get_from_vault(reference, strategy, config, new_cache_key, parsed_reference, resurrect)
     if not ok then
       return nil, fmt("could not retrieve value for reference %s (%s)", reference, err)
     end
@@ -1197,24 +1306,25 @@ local function new(self)
 
 
   ---
-  -- Function `rotate_secrets` rotates the secrets in the shared dictionary cache (SHDICT).
+  -- Function `rotate_secrets` rotates the secrets.
   --
-  -- It iterates over all keys in the SHDICT and, if a key corresponds to a reference and the
+  -- It iterates over all keys in the secrets and, if a key corresponds to a reference and the
   -- ttl of the key is less than or equal to the resurrection period, it refreshes the value
   -- associated with the reference.
   --
   -- @local
   -- @function rotate_secrets
-  -- @treturn boolean `true` after it has finished iterating over all keys in the SHDICT
-  local function rotate_secrets()
+  -- @tparam table secrets the secrets to rotate
+  -- @treturn boolean `true` after it has finished iterating over all keys in the secrets
+  local function rotate_secrets(secrets)
     local phase = get_phase()
     local caching_strategy = get_caching_strategy()
-    for _, cache_key in ipairs(SECRETS_CACHE:get_keys(0)) do
+    for _, cache_key in ipairs(secrets) do
       yield(true, phase)
 
       local ok, err = rotate_secret(cache_key, caching_strategy)
       if not ok then
-        self.log.warn(err)
+        self.log.notice(err)
       end
     end
 
@@ -1223,20 +1333,69 @@ local function new(self)
 
 
   ---
-  -- A recurring secrets rotation timer handler.
+  -- Function `rotate_secrets_cache` rotates the secrets in the shared dictionary cache.
+  --
+  -- @local
+  -- @function rotate_secrets_cache
+  -- @treturn boolean `true` after it has finished iterating over all keys in the shared dictionary cache
+  local function rotate_secrets_cache()
+    return rotate_secrets(SECRETS_CACHE:get_keys(0))
+  end
+
+
+  ---
+  -- Function `rotate_secrets_init_worker` rotates the secrets in init worker cache
+  --
+  -- On init worker the secret resolving is postponed to a timer because init worker
+  -- cannot cosockets / coroutines, and there is no other workaround currently.
+  --
+  -- @local
+  -- @function rotate_secrets_init_worker
+  -- @treturn boolean `true` after it has finished iterating over all keys in the init worker cache
+  local function rotate_secrets_init_worker()
+    local _, err, err2
+    if INIT_SECRETS then
+      _, err = rotate_references(INIT_SECRETS)
+    end
+
+    if INIT_WORKER_SECRETS then
+      _, err2 = rotate_secrets(INIT_WORKER_SECRETS)
+    end
+
+    if err or err2 then
+      return nil, err or err2
+    end
+
+    return true
+  end
+
+
+  ---
+  -- A secrets rotation timer handler.
+  --
+  -- Uses a node-level mutex to prevent multiple threads/workers running it the same time.
   --
   -- @local
   -- @function rotate_secrets_timer
-  -- @tparam boolean premature `true` if server is shutting down.
-  local function rotate_secrets_timer(premature)
+  -- @tparam boolean premature `true` if server is shutting down
+  -- @tparam[opt] boolean init `true` when this is a one of init_worker timer run
+  -- By default rotates the secrets in shared dictionary cache.
+  local function rotate_secrets_timer(premature, init)
     if premature then
-      return
+      return true
     end
 
-    local ok, err = concurrency.with_worker_mutex(ROTATION_MUTEX_OPTS, rotate_secrets)
+    local ok, err = concurrency.with_worker_mutex(ROTATION_MUTEX_OPTS, init and rotate_secrets_init_worker or rotate_secrets_cache)
     if not ok and err ~= "timeout" then
       self.log.err("rotating secrets failed (", err, ")")
     end
+
+    if init then
+      INIT_SECRETS = nil
+      INIT_WORKER_SECRETS = nil
+    end
+
+    return true
   end
 
 
@@ -1275,16 +1434,26 @@ local function new(self)
     -- refresh all the secrets
     local _, err = self.timer:named_at("secret-rotation-on-crud-event", 0, rotate_secrets_timer)
     if err then
-      self.log.err("could not schedule timer to rotate vault secret references: ", err)
+      self.log.err("could not schedule timer to rotate vault secret references on crud event: ", err)
     end
   end
 
+
+  local function should_register_crud_event()
+    local conf = self.configuration
+
+    local not_dbless = conf.database ~= "off"  -- postgres
+    local dp_with_rpc_sync = conf.role == "data_plane" and
+                             conf.cluster_rpc_sync
+
+    return not_dbless or dp_with_rpc_sync
+  end
 
   local initialized
   ---
   -- Initializes vault.
   --
-  -- Registers event handlers (on non-dbless nodes) and starts a recurring secrets
+  -- Registers event handlers and starts a recurring secrets
   -- rotation timer. It does nothing on control planes.
   --
   -- @local
@@ -1296,11 +1465,7 @@ local function new(self)
 
     initialized = true
 
-    if self.configuration.role == "control_plane" then
-      return
-    end
-
-    if self.configuration.database ~= "off" then
+    if should_register_crud_event() then
       self.worker_events.register(handle_vault_crud_event, "crud", "vaults")
     end
 
@@ -1308,6 +1473,66 @@ local function new(self)
     if err then
       self.log.err("could not schedule timer to rotate vault secret references: ", err)
     end
+
+    local _, err = self.timer:named_at("secret-rotation-on-init", 0, rotate_secrets_timer, true)
+    if err then
+      self.log.err("could not schedule timer to rotate vault secret references on init: ", err)
+    end
+  end
+
+
+  ---
+  -- Called on `init` phase, and stores value in secrets cache.
+  --
+  -- @local
+  -- @function init_in_cache_from_value
+  -- @tparam string reference a vault reference.
+  -- @tparan value string value that is stored in secrets cache.
+  local function init_in_cache_from_value(reference, value)
+    local strategy, err, config, cache_key = get_strategy(reference)
+    if not strategy then
+      return nil, err
+    end
+
+    -- doesn't support vault returned ttl, but none of the vaults supports it,
+    -- and the support for vault returned ttl might be removed later.
+    local cache_value, shdict_ttl, lru_ttl = get_cache_value_and_ttl(value, config)
+
+    local ok, cache_err = SECRETS_CACHE:safe_set(cache_key, cache_value, shdict_ttl)
+    if not ok then
+      return nil, cache_err
+    end
+
+    if cache_value ~= NEGATIVELY_CACHED_VALUE then
+      LRU:set(reference, cache_value, lru_ttl)
+    end
+
+    return true
+  end
+
+
+  ---
+  -- Called on `init` phase, and used to warmup secrets cache.
+  --
+  -- @local
+  -- @function init_in_cache
+  -- @tparam string reference a vault reference.
+  -- @tparan table record a table that is a container for de-referenced value.
+  -- @tparam field string field name in a record to which to store the de-referenced value.
+  local function init_in_cache(reference, record, field)
+    local value, err = init_in_cache_from_value(reference, record[field])
+    if not value then
+      self.log.warn("error caching secret reference ", reference, ": ", err)
+    end
+  end
+
+
+  ---
+  -- Called on `init` phase, and used to warmup secrets cache.
+  -- @local
+  -- @function init
+  local function init()
+    recurse_config_refs(self.configuration, init_in_cache)
   end
 
 
@@ -1482,6 +1707,32 @@ local function new(self)
     init_worker()
   end
 
+
+  ---
+  -- Warmups vault caches from config.
+  --
+  -- @local
+  -- @function kong.vault.warmup
+  function _VAULT.warmup(input)
+    for k, v in pairs(input) do
+      local kt = type(k)
+      if kt == "table" then
+        _VAULT.warmup(k)
+      elseif kt == "string" and is_reference(k) then
+        get(k)
+      end
+      local vt = type(v)
+      if vt == "table" then
+        _VAULT.warmup(v)
+      elseif vt == "string" and is_reference(v) then
+        get(v)
+      end
+    end
+  end
+
+  if get_phase() == "init" then
+    init()
+  end
 
   return _VAULT
 end

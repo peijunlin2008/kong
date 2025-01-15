@@ -84,9 +84,14 @@ def gather_files(path: str, image: str):
             code = os.system(
                 "ar p %s data.tar.gz | tar -C %s -xz" % (path, t.name))
         elif ext == ".rpm":
-            # GNU cpio and rpm2cpio is needed
+            # rpm2cpio is needed
+            # rpm2archive ships with rpm2cpio on debians
+            # https://github.com/rpm-software-management/rpm/commit/37b963fa51d6ad31086a6e345ce6701afda5afff
+            # rpm2archive has changed the behaviour to extract to stdout if stdout is not tty
             code = os.system(
-                "rpm2cpio %s | cpio --no-preserve-owner --no-absolute-filenames -idm -D %s" % (path, t.name))
+                """
+                    rpm2archive %s | tar -C %s -xz
+                """ % (path, t.name))
         elif ext == ".gz":
             code = os.system("tar -C %s -xf %s" % (t.name, path))
 

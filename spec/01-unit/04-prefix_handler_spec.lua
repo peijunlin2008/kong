@@ -164,10 +164,14 @@ describe("NGINX conf compiler", function()
       }))
       local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.matches("listen%s+0%.0%.0%.0:9000;", kong_nginx_conf)
-      assert.matches("listen%s+0%.0%.0%.0:9443 ssl http2;", kong_nginx_conf)
+      assert.matches("listen%s+0%.0%.0%.0:9443 ssl;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:9001;", kong_nginx_conf)
-      assert.matches("listen%s+127%.0%.0%.1:9444 ssl http2;", kong_nginx_conf)
-      assert.matches("listen%s+127%.0%.0%.1:9445 ssl http2;", kong_nginx_conf)
+      assert.matches("listen%s+127%.0%.0%.1:9444 ssl;", kong_nginx_conf)
+      assert.matches("listen%s+127%.0%.0%.1:9445 ssl;", kong_nginx_conf)
+
+      assert.match_re(kong_nginx_conf, [[server_name kong;\n.+\n.+\n\n\s+http2 on;]])
+      assert.match_re(kong_nginx_conf, [[server_name kong_admin;\n.+\n.+\n\n\s+http2 on;]])
+      assert.match_re(kong_nginx_conf, [[server_name kong_gui;\n.+\n.+\n\n\s+http2 on;]])
 
       conf = assert(conf_loader(helpers.test_conf_path, {
         proxy_listen = "0.0.0.0:9000, 0.0.0.0:9443 http2 ssl",
@@ -176,10 +180,14 @@ describe("NGINX conf compiler", function()
       }))
       kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.matches("listen%s+0%.0%.0%.0:9000;", kong_nginx_conf)
-      assert.matches("listen%s+0%.0%.0%.0:9443 ssl http2;", kong_nginx_conf)
+      assert.matches("listen%s+0%.0%.0%.0:9443 ssl;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:9001;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:8444 ssl;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:8445 ssl;", kong_nginx_conf)
+
+      assert.match_re(kong_nginx_conf, [[server_name kong;\n.+\n.+\n\n\s+http2 on;]])
+      assert.not_match_re(kong_nginx_conf, [[server_name kong_admin;\n.+\n.+\n\n\s+http2 on;]])
+      assert.not_match_re(kong_nginx_conf, [[server_name kong_gui;\n.+\n.+\n\n\s+http2 on;]])
 
       conf = assert(conf_loader(helpers.test_conf_path, {
         proxy_listen = "0.0.0.0:9000, 0.0.0.0:9443 ssl",
@@ -190,8 +198,12 @@ describe("NGINX conf compiler", function()
       assert.matches("listen%s+0%.0%.0%.0:9000;", kong_nginx_conf)
       assert.matches("listen%s+0%.0%.0%.0:9443 ssl;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:9001;", kong_nginx_conf)
-      assert.matches("listen%s+127%.0%.0%.1:8444 ssl http2;", kong_nginx_conf)
+      assert.matches("listen%s+127%.0%.0%.1:8444 ssl;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:8445 ssl;", kong_nginx_conf)
+
+      assert.match_re(kong_nginx_conf, [[server_name kong_admin;\n.+\n.+\n\n\s+http2 on;]])
+      assert.not_match_re(kong_nginx_conf, [[server_name kong;\n.+\n.+\n\n\s+http2 on;]])
+      assert.not_match_re(kong_nginx_conf, [[server_name kong_gui;\n.+\n.+\n\n\s+http2 on;]])
 
       conf = assert(conf_loader(helpers.test_conf_path, {
         proxy_listen = "0.0.0.0:9000, 0.0.0.0:9443 ssl",
@@ -203,7 +215,11 @@ describe("NGINX conf compiler", function()
       assert.matches("listen%s+0%.0%.0%.0:9443 ssl;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:9001;", kong_nginx_conf)
       assert.matches("listen%s+127%.0%.0%.1:8444 ssl;", kong_nginx_conf)
-      assert.matches("listen%s+127%.0%.0%.1:8445 ssl http2;", kong_nginx_conf)
+      assert.matches("listen%s+127%.0%.0%.1:8445 ssl;", kong_nginx_conf)
+
+      assert.match_re(kong_nginx_conf, [[server_name kong_gui;\n.+\n.+\n\n\s+http2 on;]])
+      assert.not_match_re(kong_nginx_conf, [[server_name kong;\n.+\n.+\n\n\s+http2 on;]])
+      assert.not_match_re(kong_nginx_conf, [[server_name kong_admin;\n.+\n.+\n\n\s+http2 on;]])
     end)
     it("enables proxy_protocol", function()
       local conf = assert(conf_loader(helpers.test_conf_path, {
@@ -292,6 +308,33 @@ describe("NGINX conf compiler", function()
       assert.not_matches("ssl_certificate_by_lua_block", kong_nginx_conf)
       assert.not_matches("ssl_dhparam", kong_nginx_conf)
     end)
+
+    it("renders RPC server", function()
+      local conf = assert(conf_loader(helpers.test_conf_path, {
+        role = "control_plane",
+        cluster_cert = "spec/fixtures/kong_clustering.crt",
+        cluster_cert_key = "spec/fixtures/kong_clustering.key",
+        cluster_listen = "127.0.0.1:9005",
+        cluster_rpc = "on",
+        nginx_conf = "spec/fixtures/custom_nginx.template",
+      }))
+      local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
+      assert.matches("location = /v2/outlet {", kong_nginx_conf)
+    end)
+
+    it("does not renders RPC server when inert", function()
+      local conf = assert(conf_loader(helpers.test_conf_path, {
+        role = "control_plane",
+        cluster_cert = "spec/fixtures/kong_clustering.crt",
+        cluster_cert_key = "spec/fixtures/kong_clustering.key",
+        cluster_listen = "127.0.0.1:9005",
+        cluster_rpc = "off",
+        nginx_conf = "spec/fixtures/custom_nginx.template",
+      }))
+      local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
+      assert.not_matches("location = /v2/outlet {", kong_nginx_conf)
+    end)
+
     describe("handles client_ssl", function()
       it("on", function()
         local conf = assert(conf_loader(helpers.test_conf_path, {
@@ -486,24 +529,72 @@ describe("NGINX conf compiler", function()
 
     describe("injected NGINX directives", function()
       it("injects proxy_access_log directive", function()
-        local conf = assert(conf_loader(nil, {
+        local conf, nginx_conf
+        conf = assert(conf_loader(nil, {
           proxy_access_log = "/dev/stdout",
           stream_listen = "0.0.0.0:9100",
           nginx_stream_tcp_nodelay = "on",
         }))
-        local nginx_conf = prefix_handler.compile_kong_conf(conf)
-        assert.matches("access_log%s/dev/stdout;", nginx_conf)
-        local nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
+        nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("access_log%s/dev/stdout%skong_log_format;", nginx_conf)
+        nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
         assert.matches("access_log%slogs/access.log%sbasic;", nginx_conf)
 
-        local conf = assert(conf_loader(nil, {
+        conf = assert(conf_loader(nil, {
+          proxy_access_log = "off",
+          stream_listen = "0.0.0.0:9100",
+          nginx_stream_tcp_nodelay = "on",
+        }))
+        nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("access_log%soff;", nginx_conf)
+        nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
+        assert.matches("access_log%slogs/access.log%sbasic;", nginx_conf)
+
+        conf = assert(conf_loader(nil, {
+          proxy_access_log = "/dev/stdout apigw-json",
+          nginx_http_log_format = 'apigw-json "$kong_request_id"',
+          stream_listen = "0.0.0.0:9100",
+          nginx_stream_tcp_nodelay = "on",
+        }))
+        nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("access_log%s/dev/stdout%sapigw%-json;", nginx_conf)
+        nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
+        assert.matches("access_log%slogs/access.log%sbasic;", nginx_conf)
+
+        -- configure an undefined log format will error
+        -- on kong start. This is expected
+        conf = assert(conf_loader(nil, {
+          proxy_access_log = "/dev/stdout not-exist",
+          nginx_http_log_format = 'apigw-json "$kong_request_id"',
+          stream_listen = "0.0.0.0:9100",
+          nginx_stream_tcp_nodelay = "on",
+        }))
+        nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("access_log%s/dev/stdout%snot%-exist;", nginx_conf)
+        nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
+        assert.matches("access_log%slogs/access.log%sbasic;", nginx_conf)
+
+        conf = assert(conf_loader(nil, {
+          proxy_access_log = "/tmp/not-exist.log",
+          stream_listen = "0.0.0.0:9100",
+          nginx_stream_tcp_nodelay = "on",
+        }))
+        nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("access_log%s/tmp/not%-exist.log%skong_log_format;", nginx_conf)
+        nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
+        assert.matches("access_log%slogs/access.log%sbasic;", nginx_conf)
+
+        conf = assert(conf_loader(nil, {
+          prefix = "servroot_tmp",
+          nginx_stream_log_format = "custom '$protocol $status'",
           proxy_stream_access_log = "/dev/stdout custom",
           stream_listen = "0.0.0.0:9100",
           nginx_stream_tcp_nodelay = "on",
         }))
-        local nginx_conf = prefix_handler.compile_kong_conf(conf)
-        assert.matches("access_log%slogs/access.log;", nginx_conf)
-        local nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
+        assert(prefix_handler.prepare_prefix(conf))
+        nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("access_log%slogs/access.log%skong_log_format;", nginx_conf)
+        nginx_conf = prefix_handler.compile_kong_stream_conf(conf)
         assert.matches("access_log%s/dev/stdout%scustom;", nginx_conf)
       end)
 
@@ -599,6 +690,14 @@ describe("NGINX conf compiler", function()
         }))
         local nginx_conf = prefix_handler.compile_kong_conf(conf)
         assert.matches("large_client_header_buffers%s+16 24k;", nginx_conf)
+      end)
+
+      it("injects nginx_location_* directives", function()
+        local conf = assert(conf_loader(nil, {
+          nginx_location_proxy_ignore_headers = "X-Accel-Redirect",
+        }))
+        local nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("proxy_ignore_headers%sX%-Accel%-Redirect;", nginx_conf)
       end)
 
       it("injects nginx_admin_* directives", function()
@@ -837,12 +936,20 @@ describe("NGINX conf compiler", function()
         assert.matches("wasm {.+socket_connect_timeout 10s;.+}", ngx_cfg({ wasm = true, nginx_wasm_socket_connect_timeout="10s" }, debug))
       end)
       it("injects a shm_kv", function()
-        assert.matches("wasm {.+shm_kv counters 10m;.+}", ngx_cfg({ wasm = true, nginx_wasm_shm_counters="10m" }, debug))
+        assert.matches("wasm {.+shm_kv counters 10m;.+}", ngx_cfg({ wasm = true, nginx_wasm_shm_kv_counters="10m" }, debug))
+      end)
+      it("injects a general shm_kv", function()
+        assert.matches("wasm {.+shm_kv %* 10m;.+}", ngx_cfg({ wasm = true, nginx_wasm_shm_kv = "10m" }, debug))
       end)
       it("injects multiple shm_kvs", function()
         assert.matches(
-          "wasm {.+shm_kv cache 10m.+shm_kv counters 10m;.+}",
-          ngx_cfg({ wasm = true, nginx_wasm_shm_cache="10m", nginx_wasm_shm_counters="10m"}, debug)
+          "wasm {.+shm_kv cache 10m.+shm_kv counters 10m;.+shm_kv %* 5m;.+}",
+          ngx_cfg({
+            wasm = true,
+            nginx_wasm_shm_kv_cache = "10m",
+            nginx_wasm_shm_kv_counters = "10m",
+            nginx_wasm_shm_kv = "5m",
+          }, debug)
         )
       end)
       it("injects default configurations if wasm=on", function()
@@ -853,15 +960,14 @@ describe("NGINX conf compiler", function()
       end)
       it("does not inject default configurations if wasm=off", function()
         assert.not_matches(
-          ".+proxy_wasm_lua_resolver on;.+",
+          ".+proxy_wasm_lua_resolver.+",
           kong_ngx_cfg({ wasm = false, }, debug)
         )
       end)
-      it("permits overriding proxy_wasm_lua_resolver", function()
+      it("permits overriding proxy_wasm_lua_resolver to off", function()
         assert.matches(
           ".+proxy_wasm_lua_resolver off;.+",
           kong_ngx_cfg({ wasm = true,
-                         -- or should this be `false`? IDK
                          nginx_http_proxy_wasm_lua_resolver = "off",
                        }, debug)
         )
@@ -893,6 +999,14 @@ describe("NGINX conf compiler", function()
             wasm = true,
             nginx_wasm_wasmer_flag1=true,
             nginx_wasm_wasmer_flag2="1m",
+          }, debug)
+        )
+      end)
+      it("injects wasmtime cache_config", function()
+        assert.matches(
+          "wasm {.+wasmtime {.+cache_config .+%.wasmtime_config%.toml.*;",
+          ngx_cfg({
+            wasm = true,
           }, debug)
         )
       end)
@@ -1397,6 +1511,7 @@ describe("NGINX conf compiler", function()
       local main_inject_conf = prefix_handler.compile_nginx_main_inject_conf(helpers.test_conf)
       assert.not_matches("lmdb_environment_path", main_inject_conf, nil, true)
       assert.not_matches("lmdb_map_size", main_inject_conf, nil, true)
+      assert.not_matches("lmdb_validation_tag", main_inject_conf, nil, true)
     end)
 
     it("compiles a main NGINX inject conf #database=off", function()
@@ -1406,6 +1521,11 @@ describe("NGINX conf compiler", function()
       local main_inject_conf = prefix_handler.compile_nginx_main_inject_conf(conf)
       assert.matches("lmdb_environment_path%s+dbless.lmdb;", main_inject_conf)
       assert.matches("lmdb_map_size%s+2048m;", main_inject_conf)
+
+      local kong_meta = require "kong.meta"
+      local major = kong_meta._VERSION_TABLE.major
+      local minor = kong_meta._VERSION_TABLE.minor
+      assert.matches("lmdb_validation_tag%s+" .. major .. "%." .. minor .. ";", main_inject_conf)
     end)
   end)
 
@@ -1414,7 +1534,7 @@ describe("NGINX conf compiler", function()
       local http_inject_conf = prefix_handler.compile_nginx_http_inject_conf(helpers.test_conf)
       assert.matches("lua_ssl_verify_depth%s+1;", http_inject_conf)
       assert.matches("lua_ssl_trusted_certificate.+;", http_inject_conf)
-      assert.matches("lua_ssl_protocols%s+TLSv1.1 TLSv1.2 TLSv1.3;", http_inject_conf)
+      assert.matches("lua_ssl_protocols%s+TLSv1.2 TLSv1.3;", http_inject_conf)
     end)
     it("sets lua_ssl_verify_depth", function()
       local conf = assert(conf_loader(helpers.test_conf_path, {
@@ -1454,7 +1574,7 @@ describe("NGINX conf compiler", function()
       local stream_inject_conf = prefix_handler.compile_nginx_stream_inject_conf(helpers.test_conf)
       assert.matches("lua_ssl_verify_depth%s+1;", stream_inject_conf)
       assert.matches("lua_ssl_trusted_certificate.+;", stream_inject_conf)
-      assert.matches("lua_ssl_protocols%s+TLSv1.1 TLSv1.2 TLSv1.3;", stream_inject_conf)
+      assert.matches("lua_ssl_protocols%s+TLSv1.2 TLSv1.3;", stream_inject_conf)
     end)
     it("sets lua_ssl_verify_depth", function()
       local conf = assert(conf_loader(helpers.test_conf_path, {

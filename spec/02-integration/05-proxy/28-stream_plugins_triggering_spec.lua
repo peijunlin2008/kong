@@ -1,7 +1,6 @@
 local helpers = require "spec.helpers"
 local pl_file = require "pl.file"
 local cjson = require "cjson"
-local atc_compat = require "kong.router.compat"
 
 
 local TEST_CONF = helpers.test_conf
@@ -40,18 +39,21 @@ end
 
 local phases = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] preread phase"] = 1,
   ["%[logger%] log phase"] = 1,
 }
 
 local phases_2 = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] preread phase"] = 0,
   ["%[logger%] log phase"] = 1,
 }
 
 local phases_tls = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] certificate phase"] = 1,
   ["%[logger%] preread phase"] = 1,
   ["%[logger%] log phase"] = 1,
@@ -59,6 +61,7 @@ local phases_tls = {
 
 local phases_tls_2 = {
   ["%[logger%] init_worker phase"] = 1,
+  ["%[logger%] configure phase"] = 1,
   ["%[logger%] certificate phase"] = 1,
   ["%[logger%] preread phase"] = 0,
   ["%[logger%] log phase"] = 1,
@@ -72,37 +75,12 @@ end
 
 
 local function reload_router(flavor)
-  _G.kong = {
-    configuration = {
-      router_flavor = flavor,
-    },
-  }
-
-  helpers.setenv("KONG_ROUTER_FLAVOR", flavor)
-
-  package.loaded["spec.helpers"] = nil
-  package.loaded["kong.global"] = nil
-  package.loaded["kong.cache"] = nil
-  package.loaded["kong.db"] = nil
-  package.loaded["kong.db.schema.entities.routes"] = nil
-  package.loaded["kong.db.schema.entities.routes_subschemas"] = nil
-
-  helpers = require "spec.helpers"
-
-  helpers.unsetenv("KONG_ROUTER_FLAVOR")
+  helpers = require("spec.internal.module").reload_helpers(flavor)
 end
 
 
+-- TODO: remove it when we confirm it is not needed
 local function gen_route(flavor, r)
-  if flavor ~= "expressions" then
-    return r
-  end
-
-  r.expression = atc_compat.get_expression(r)
-  r.priority = tonumber(atc_compat._get_priority(r))
-
-  r.destinations = nil
-
   return r
 end
 

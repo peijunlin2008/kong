@@ -1,5 +1,7 @@
 local typedefs = require "kong.db.schema.typedefs"
 local reserved_words = require "kong.plugins.acme.reserved_words"
+local redis_schema = require "kong.tools.redis.schema"
+local shallow_copy = require("kong.tools.table").shallow_copy
 
 local CERT_TYPES = { "rsa", "ecc" }
 
@@ -34,25 +36,69 @@ local SHM_STORAGE_SCHEMA = {
 local KONG_STORAGE_SCHEMA = {
 }
 
-local REDIS_STORAGE_SCHEMA = {
-  { host = typedefs.host, },
-  { port = typedefs.port, },
-  { database = { type = "number", description = "The index of the Redis database to use.", } },
-  { auth = { type = "string", referenceable = true, description = "The Redis password to use for authentication. " } },
-  { ssl = { type = "boolean", required = true, default = false, description = "Whether to use SSL/TLS encryption when connecting to the Redis server."} },
-  { ssl_verify = { type = "boolean", required = true, default = false, description = "Whether to verify the SSL/TLS certificate presented by the Redis server. This should be a boolean value." } },
-  { ssl_server_name = typedefs.sni { required = false, description = "The expected server name for the SSL/TLS certificate presented by the Redis server." }},
-  {
-    namespace = {
-      type = "string",
-      description = "A namespace to prepend to all keys stored in Redis.",
-      required = true,
-      default = "",
-      len_min = 0,
-      custom_validator = validate_namespace
-    }
-  },
+local LEGACY_SCHEMA_TRANSLATIONS = {
+  { auth = {
+    type = "string",
+    len_min = 0,
+    deprecation = {
+      replaced_with = { { path = { 'password' } } },
+      message = "acme: config.storage_config.redis.auth is deprecated, please use config.storage_config.redis.password instead",
+      removal_in_version = "4.0", },
+    func = function(value)
+      return { password = value }
+    end
+  }},
+  { ssl_server_name = {
+    type = "string",
+    deprecation = {
+      replaced_with = { { path = { 'server_name' } } },
+      message = "acme: config.storage_config.redis.ssl_server_name is deprecated, please use config.storage_config.redis.server_name instead",
+      removal_in_version = "4.0", },
+    func = function(value)
+      return { server_name = value }
+    end
+  }},
+  { namespace = {
+    type = "string",
+    len_min = 0,
+    deprecation = {
+      replaced_with = { { path = { 'extra_options', 'namespace' } } },
+      message = "acme: config.storage_config.redis.namespace is deprecated, please use config.storage_config.redis.extra_options.namespace instead",
+      removal_in_version = "4.0", },
+    func = function(value)
+      return { extra_options = { namespace = value } }
+    end
+  }},
+  { scan_count = {
+    type = "integer",
+    deprecation = {
+      replaced_with = { { path = { 'extra_options', 'scan_count' } } },
+      message = "acme: config.storage_config.redis.scan_count is deprecated, please use config.storage_config.redis.extra_options.scan_count instead",
+      removal_in_version = "4.0", },
+    func = function(value)
+      return { extra_options = { scan_count = value } }
+    end
+  }},
 }
+
+local REDIS_STORAGE_SCHEMA = shallow_copy(redis_schema.config_schema.fields)
+table.insert(REDIS_STORAGE_SCHEMA, { extra_options = {
+  description = "Custom ACME Redis options",
+  type = "record",
+  fields = {
+    {
+      namespace = {
+        type = "string",
+        description = "A namespace to prepend to all keys stored in Redis.",
+        required = true,
+        default = "",
+        len_min = 0,
+        custom_validator = validate_namespace
+      }
+    },
+    { scan_count = { type = "number", required = false, default = 10, description = "The number of keys to return in Redis SCAN calls." } },
+  }
+} })
 
 local CONSUL_STORAGE_SCHEMA = {
   { https = { type = "boolean", default = false, description = "Boolean representation of https."}, },
@@ -143,7 +189,7 @@ local schema = {
           -- Kong doesn't support multiple certificate chains yet
           {
             cert_type = {
-              description = "The certificate type to create. The possible values are `'rsa'` for RSA certificate or `'ecc'` for EC certificate.",
+              description = "The certificate type to create. The possible values are `rsa` for RSA certificate or `ecc` for EC certificate.",
               type = "string",
               default = 'rsa',
               one_of = CERT_TYPES,
@@ -181,7 +227,7 @@ local schema = {
           },
           {
             storage = {
-              description = "The backend storage type to use. The possible values are `'kong'`, `'shm'`, `'redis'`, `'consul'`, or `'vault'`. In DB-less mode, `'kong'` storage is unavailable. Note that `'shm'` storage does not persist during Kong restarts and does not work for Kong running on different machines, so consider using one of `'kong'`, `'redis'`, `'consul'`, or `'vault'` in production. Please refer to the Hybrid Mode sections below as well.",
+              description = "The backend storage type to use. In DB-less mode and Konnect, `kong` storage is unavailable. In hybrid mode and Konnect, `shm` storage is unavailable. `shm` storage does not persist during Kong restarts and does not work for Kong running on different machines, so consider using one of `kong`, `redis`, `consul`, or `vault` in production.",
               type = "string",
               default = "shm",
               one_of = STORAGE_TYPES,
@@ -193,7 +239,7 @@ local schema = {
               fields = {
                 { shm = { type = "record", fields = SHM_STORAGE_SCHEMA, } },
                 { kong = { type = "record", fields = KONG_STORAGE_SCHEMA, } },
-                { redis = { type = "record", fields = REDIS_STORAGE_SCHEMA, } },
+                { redis = { type = "record", fields = REDIS_STORAGE_SCHEMA, shorthand_fields = LEGACY_SCHEMA_TRANSLATIONS } },
                 { consul = { type = "record", fields = CONSUL_STORAGE_SCHEMA, } },
                 { vault = { type = "record", fields = VAULT_STORAGE_SCHEMA, } },
               },
@@ -231,6 +277,14 @@ local schema = {
         then_err = "terms of service must be accepted, see https://letsencrypt.org/repository/",
       }
     },
+    { conditional = {
+      if_field = "config.storage", if_match = { eq = "redis" },
+      then_field = "config.storage_config.redis.host", then_match = { required = true },
+    } },
+    { conditional = {
+      if_field = "config.storage", if_match = { eq = "redis" },
+      then_field = "config.storage_config.redis.port", then_match = { required = true },
+    } },
     {
       custom_entity_check = {
         field_sources = { "config.storage", },

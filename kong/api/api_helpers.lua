@@ -1,4 +1,4 @@
-local utils = require "kong.tools.utils"
+local kong_table = require "kong.tools.table"
 local cjson = require "cjson"
 local pl_pretty = require "pl.pretty"
 local tablex = require "pl.tablex"
@@ -6,6 +6,7 @@ local app_helpers = require "lapis.application"
 local arguments = require "kong.api.arguments"
 local Errors = require "kong.db.errors"
 local hooks = require "kong.hooks"
+local decode_args = require("kong.tools.http").decode_args
 
 
 local ngx = ngx
@@ -94,7 +95,7 @@ function _M.normalize_nested_params(obj)
     is_array = false
     if type(v) == "table" then
       -- normalize arrays since Lapis parses ?key[1]=foo as {["1"]="foo"} instead of {"foo"}
-      if utils.is_array(v, "lapis") then
+      if kong_table.is_array(v, "lapis") then
         is_array = true
         local arr = {}
         for _, arr_v in pairs(v) do arr[#arr+1] = arr_v end
@@ -259,7 +260,9 @@ function _M.before_filter(self)
   elseif sub(content_type, 1, 16) == "application/json"
       or sub(content_type, 1, 19) == "multipart/form-data"
       or sub(content_type, 1, 33) == "application/x-www-form-urlencoded"
-      or (ACCEPTS_YAML[self.route_name] and sub(content_type, 1,  9) == "text/yaml")
+      or (ACCEPTS_YAML[self.route_name] and
+          (sub(content_type, 1,  16) == "application/yaml" or
+           sub(content_type, 1,  9)  == "text/yaml"))
   then
     return
   end
@@ -268,13 +271,28 @@ function _M.before_filter(self)
 end
 
 function _M.cors_filter(self)
-  local origin = self.req.headers["Origin"]
+  local allowed_origins = kong.configuration.admin_gui_origin
 
-  if kong.configuration.admin_gui_origin then
-    origin = kong.configuration.admin_gui_origin
+  local function is_origin_allowed(req_origin)
+    for _, allowed_origin in ipairs(allowed_origins) do
+      if req_origin == allowed_origin then
+        return true
+      end
+    end
+    return false
   end
 
-  ngx.header["Access-Control-Allow-Origin"] = origin or "*"
+  local req_origin = self.req.headers["Origin"]
+
+  if allowed_origins and #allowed_origins > 0 then
+    if not is_origin_allowed(req_origin) then
+      req_origin = allowed_origins[1]
+    end
+  else
+    req_origin = req_origin or "*"
+  end
+
+  ngx.header["Access-Control-Allow-Origin"] = req_origin
   ngx.header["Access-Control-Allow-Credentials"] = "true"
 
   if ngx.req.get_method() == "OPTIONS" then
@@ -299,7 +317,7 @@ local function parse_params(fn)
           return kong.response.exit(400, { message = "Cannot parse JSON body" })
 
         elseif find(content_type, "application/x-www-form-urlencode", 1, true) then
-          self.params = utils.decode_args(self.params)
+          self.params = decode_args(self.params)
         end
       end
     end
